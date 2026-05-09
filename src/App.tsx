@@ -110,11 +110,26 @@ function App() {
           taskName: ''
         };
         setShots(prev => [newShot, ...prev]);
+      } else if (request.type === 'CONTENT_SCRIPT_READY') {
+        // Content script just loaded on a new page, activate it!
+        activateSniper();
       }
     };
     
+    // Listen for tab updates (refreshes) to re-activate
+    const tabUpdateListener = (_tabId: any, changeInfo: any, tab: any) => {
+      if (changeInfo.status === 'complete' && tab.active) {
+        activateSniper();
+      }
+    };
+
     chrome.runtime?.onMessage.addListener(messageListener);
-    return () => chrome.runtime?.onMessage.removeListener(messageListener);
+    chrome.tabs?.onUpdated.addListener(tabUpdateListener);
+
+    return () => {
+      chrome.runtime?.onMessage.removeListener(messageListener);
+      chrome.tabs?.onUpdated.removeListener(tabUpdateListener);
+    };
   }, []);
 
   useEffect(() => {
