@@ -545,4 +545,31 @@ body {
   border-radius: 0.25rem;
   border: 1px solid var(--border);
   margin-bottom: 0.5rem;
+  overflow-wrap: break-word;
+}
+
+/* Multi-Model Styles */
+.select-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.select-icon {
+  position: absolute;
+  right: 0.75rem;
+  pointer-events: none;
+  color: var(--text-secondary);
+}
+
+.inline-loader {
+  display: inline-block;
+  margin-left: 0.5rem;
+  vertical-align: middle;
+  color: var(--primary);
+}
+
+.select-input {
+  appearance: none;
+  padding-right: 2.5rem !important;
 }
