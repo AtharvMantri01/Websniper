@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "WebSniper",
+  "version": "1.0.0",
+  "description": "Capture DOM element data effortlessly.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "sidePanel",
+    "tabs"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "WebSniper"
+  },
+  "side_panel": {
+    "default_path": "index.html"
+  }
+}
