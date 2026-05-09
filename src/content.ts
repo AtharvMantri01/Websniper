@@ -75,10 +75,16 @@ function handleClick(e: MouseEvent) {
   const selector = getCssSelector(target);
   const xpath = getXPath(target);
   const innerText = target.innerText || '';
+  const contextText = target.parentElement?.innerText || innerText;
 
   chrome.runtime.sendMessage({
     type: 'SNIPER_SHOT',
-    data: { selector, xpath, innerText: innerText.trim().substring(0, 500) }
+    data: { 
+      selector, 
+      xpath, 
+      innerText: innerText.trim(),
+      contextText: contextText.trim().substring(0, 2000)
+    }
   });
 }
 

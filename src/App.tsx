@@ -7,6 +7,7 @@ interface SniperShot {
   selector: string;
   xpath: string;
   innerText: string;
+  contextText?: string;
   command?: string;
   generatedCode?: string;
   isGenerating?: boolean;
@@ -233,21 +234,45 @@ function App() {
 
     setShots(prev => prev.map(s => s.id === shot.id ? { ...s, isGenerating: true, error: undefined, generatedCode: undefined } : s));
 
-    const systemPrompt = `You are an expert Python Playwright engineer. Return ONLY a valid Python code snippet using the synchronous Playwright API (sync_playwright). Do not include any markdown formatting like \`\`\`python wrappers or explanations. Just the raw code.
-Assume the browser and page are already initialized in a variable named 'page'. 
+    const systemPrompt = `You are an expert Python Playwright automation engineer. Return ONLY raw Python code. No markdown, no \`\`\`python, no explanations.
 
-CRITICAL GUIDELINES:
-1. On many sites, labels (e.g., "Capital:") and values are in separate adjacent tags. To be safe, locate the closest common container (like a card or div) and use its .text_content() for parsing.
-2. If using .text_content() on a container, use Python string manipulation (.split(), regex, etc.) to extract the value following a label.
-3. Use page.get_by_text("Label", exact=False) to find the starting point.
-4. Always print the final extracted data to the console in a clear format.
+ENVIRONMENT:
+- A variable called 'page' is already available. It is a Playwright Page object that has already navigated to the target URL.
+- Do NOT call sync_playwright(), do NOT launch a browser, do NOT call page.goto(). These are already done for you.
+- Just write the interaction/extraction code.
 
-Context:
-URL: ${window.location.href}
-Selector: ${shot.selector}
-XPath: ${shot.xpath}
-Inner Text: ${shot.innerText.substring(0, 1000)}
-Command: ${shot.command}`;
+MANDATORY RULES — VIOLATION MEANS BROKEN CODE:
+1. ONLY use these Playwright locator methods: page.locator(css_or_xpath_selector), page.get_by_text(text). 
+2. page.get_by_text() accepts ONLY (text, exact=bool). NO other keyword arguments like 'selector'.
+3. page.locator() accepts a CSS selector string or "xpath=..." string. That's it.
+4. NEVER guess HTML tag names. NEVER use locators like "p:has-text(...)" or "div:has-text(...)".
+5. To extract data near a captured element, ALWAYS use this proven pattern:
+   container = page.locator("${shot.selector}").first.locator("xpath=..")
+   full_text = container.text_content()
+   # Then use Python string parsing (split, regex, etc.) on full_text
+6. If the container text doesn't have what you need, go one more level up:
+   container = page.locator("${shot.selector}").first.locator("xpath=../..")
+7. Always add timeout=10000 to any .text_content() or .click() call.
+8. Always print results to stdout.
+
+WORKING EXAMPLE (for extracting data near a heading):
+\`\`\`
+container = page.locator("h3.country-name", has_text="Andorra").first.locator("xpath=..")
+text = container.text_content(timeout=10000)
+# text might be: "Andorra\\nCapital: Andorra la Vella\\nPopulation: 84000\\nArea: 468.0"
+import re
+for line in text.strip().split("\\n"):
+    line = line.strip()
+    if line:
+        print(line)
+\`\`\`
+
+CONTEXT FOR THIS TASK:
+Captured Selector: ${shot.selector}
+Captured XPath: ${shot.xpath}  
+Captured Element Text: ${shot.innerText}
+Surrounding Context: ${shot.contextText || 'Not available'}
+User Command: ${shot.command}`;
 
     try {
       let code = '';
