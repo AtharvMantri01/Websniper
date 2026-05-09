@@ -101,6 +101,10 @@ function injectStyles() {
       background: rgba(16, 185, 129, 0.2);
       color: #10b981;
     }
+    #${ACTION_MENU_ID} button.ws-action-btn .ws-action-icon.press-icon {
+      background: rgba(168, 85, 247, 0.2);
+      color: #c084fc;
+    }
     #${ACTION_MENU_ID} .ws-menu-close {
       position: absolute;
       top: 4px;
@@ -172,7 +176,23 @@ function removeActionMenu() {
   pendingTarget = null;
 }
 
-function selectAction(action: 'click' | 'type' | 'extract') {
+function selectAction(action: 'click' | 'type' | 'extract' | 'press_enter') {
+  // press_enter doesn't need a target element
+  if (action === 'press_enter') {
+    chrome.runtime.sendMessage({
+      type: 'SNIPER_ACTION',
+      data: {
+        action: 'press_enter',
+        selector: '',
+        xpath: '',
+        innerText: 'Enter Key',
+        contextText: ''
+      }
+    });
+    removeActionMenu();
+    return;
+  }
+
   if (!pendingTarget) return;
 
   let typeValue: string | undefined;
@@ -225,10 +245,11 @@ function showActionMenu(x: number, y: number) {
   menu.appendChild(closeBtn);
 
   // Actions
-  const actions: { key: 'click' | 'type' | 'extract'; label: string; iconClass: string; icon: string }[] = [
+  const actions: { key: 'click' | 'type' | 'extract' | 'press_enter'; label: string; iconClass: string; icon: string }[] = [
     { key: 'click', label: 'Click', iconClass: 'click-icon', icon: '↗' },
     { key: 'type', label: 'Type Text', iconClass: 'type-icon', icon: 'T' },
     { key: 'extract', label: 'Extract', iconClass: 'extract-icon', icon: '⤓' },
+    { key: 'press_enter', label: 'Press Enter', iconClass: 'press-icon', icon: '⏎' },
   ];
 
   for (const a of actions) {

@@ -1,10 +1,10 @@
 import { useState, useEffect } from 'react';
-import { Target, Copy, CheckCircle, Code2, Trash2, Settings, Home, Loader2, Play, Terminal, Zap, Shield, Save, ChevronDown, X, MousePointerClick, Type, FileOutput } from 'lucide-react';
+import { Target, Copy, CheckCircle, Code2, Trash2, Settings, Home, Loader2, Play, Terminal, Zap, Shield, Save, ChevronDown, X, MousePointerClick, Type, FileOutput, CornerDownLeft, RefreshCw } from 'lucide-react';
 import './App.css';
 
 interface ActionStep {
   id: string;
-  action: 'click' | 'type' | 'extract';
+  action: 'click' | 'type' | 'extract' | 'press_enter';
   selector: string;
   xpath: string;
   innerText: string;
@@ -60,7 +60,11 @@ function App() {
   const [workflowGenerating, setWorkflowGenerating] = useState(false);
   const [workflowError, setWorkflowError] = useState<string | undefined>();
   const [workflowTaskName, setWorkflowTaskName] = useState('');
-  const [workflowResult, setWorkflowResult] = useState<{ isRunning?: boolean; success?: boolean; output?: string; error?: string } | undefined>();
+  const [workflowResult, setWorkflowResult] = useState<{ isRunning?: boolean; success?: boolean; output?: string; error?: string; healed?: boolean } | undefined>();
+
+  // Auto-Fix state
+  const [autoFixEnabled, setAutoFixEnabled] = useState(true);
+  const [healingStatus, setHealingStatus] = useState<{ active: boolean; attempt: number; maxAttempts: number } | undefined>();
 
   // Ghost Mode state
   const [isGhostMode, setIsGhostMode] = useState(false);
@@ -251,6 +255,7 @@ ACTION TYPES:
 - "click": Click the element. Use page.locator(selector).click(timeout=10000)
 - "type": Type text into the element (see TYPING RULE below for correct method).
 - "extract": Extract text content from the element. Use page.locator(selector).text_content(timeout=10000) and print() the result.
+- "press_enter": Press the Enter key globally. Use page.keyboard.press('Enter') followed by page.wait_for_timeout(2000).
 
 MANDATORY RULES — VIOLATION MEANS BROKEN CODE:
 1. Before EVERY interaction, wait for the element: page.wait_for_selector(selector, timeout=15000)
@@ -267,6 +272,7 @@ MANDATORY RULES — VIOLATION MEANS BROKEN CODE:
     page.wait_for_timeout(500)
     page.keyboard.type('the text')
     Only use .fill(value, timeout=10000) when the selector is clearly an input, textarea, or [contenteditable] element.
+11. PRESS ENTER RULE: If the action is [PRESS_ENTER], do NOT use any locator or selector. Just call page.keyboard.press('Enter') and then page.wait_for_timeout(2000) to allow backend/API calls to resolve.
 
 ACTION SEQUENCE:
 ${stepsDescription}
@@ -330,20 +336,106 @@ ${workflowCommand ? `USER INSTRUCTION: ${workflowCommand}` : ''}`;
     }
   };
 
+  // ---- Reusable helpers ----
+  const callLLM = async (sysPrompt: string, userMsg: string): Promise<string> => {
+    const activeModel = (provider === 'openrouter' && model === 'custom') ? customModel : model;
+    if (!apiKey || !activeModel) throw new Error('API key or model not configured');
+
+    let code = '';
+    if (provider === 'openai' || provider === 'openrouter') {
+      const url = provider === 'openai' ? 'https://api.openai.com/v1/chat/completions' : 'https://openrouter.ai/api/v1/chat/completions';
+      const headers: any = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` };
+      if (provider === 'openrouter') { headers['HTTP-Referer'] = 'https://websniper.extension'; headers['X-Title'] = 'WebSniper'; }
+      const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ model: activeModel, messages: [{ role: 'system', content: sysPrompt }, { role: 'user', content: userMsg }] }) });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error.message || data.error);
+      code = data.choices[0].message.content;
+    } else if (provider === 'anthropic') {
+      const res = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' }, body: JSON.stringify({ model: activeModel, max_tokens: 2048, system: sysPrompt, messages: [{ role: 'user', content: userMsg }] }) });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error.message);
+      code = data.content[0].text;
+    } else if (provider === 'google') {
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${activeModel}:generateContent?key=${apiKey}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: `${sysPrompt}\n\n${userMsg}` }] }] }) });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error.message);
+      code = data.candidates[0].content.parts[0].text;
+    }
+    return code.replace(/^```python\n?/, '').replace(/```$/, '').trim();
+  };
+
+  const executeCode = async (code: string, url: string): Promise<{ success: boolean; output: string; error: string }> => {
+    const res = await fetch('http://127.0.0.1:8000/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, url })
+    });
+    return await res.json();
+  };
+
+  // ---- Auto-Fix Healing Loop ----
+  const autoFixRoutine = async (failedCode: string, errorTrace: string, pageUrl: string) => {
+    const maxAttempts = 3;
+    let currentCode = failedCode;
+    let currentError = errorTrace;
+
+    const healPrompt = `You are a Playwright debugging expert. You are given Python Playwright code that FAILED with an error.
+Fix the code so it works. Return ONLY raw Python code. No markdown, no \`\`\`python, no explanations.
+
+ENVIRONMENT: A 'page' variable (Playwright Page) is already available and navigated to the target URL. Do NOT call sync_playwright(), launch a browser, or page.goto().
+
+COMMON FIXES TO APPLY:
+- Increase timeouts for slow-loading elements (use 15000-30000ms)
+- Add page.wait_for_selector(selector, timeout=15000) before interacting
+- Fix selectors that don't match the DOM (try XPath fallback with "xpath=...")
+- Handle dynamic/lazy-loaded content with page.wait_for_load_state("networkidle")
+- Replace .fill() with .click() + page.keyboard.type() for non-input elements (div, span, etc.)
+- Add page.wait_for_timeout(1000-2000) between steps
+- Wrap in try/except with meaningful error messages
+
+Do NOT change the overall logic or goal. Only fix what caused the error.`;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      setHealingStatus({ active: true, attempt, maxAttempts });
+
+      try {
+        const fixedCode = await callLLM(healPrompt, `FAILED CODE:\n${currentCode}\n\nERROR TRACE:\n${currentError}`);
+        const result = await executeCode(fixedCode, pageUrl);
+
+        if (result.success) {
+          setWorkflowCode(fixedCode);
+          setWorkflowResult({ isRunning: false, success: true, output: result.output, healed: true });
+          setHealingStatus(undefined);
+          return;
+        } else {
+          currentCode = fixedCode;
+          currentError = result.error;
+        }
+      } catch (err: any) {
+        currentError = err.message || 'LLM call failed during healing';
+      }
+    }
+
+    // All attempts failed
+    setHealingStatus(undefined);
+    setWorkflowResult({ isRunning: false, success: false, error: `Auto-Fix failed after ${maxAttempts} attempts.\n\nLast error:\n${currentError}` });
+  };
+
   const runWorkflowLive = async () => {
     if (!workflowCode) return;
     setWorkflowResult({ isRunning: true });
+    setHealingStatus(undefined);
     chrome.tabs?.query({ active: true, currentWindow: true }, async (tabs) => {
       const tab = tabs[0];
       const url = tab?.url || '';
       try {
-        const res = await fetch('http://127.0.0.1:8000/execute', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ code: workflowCode, url })
-        });
-        const result = await res.json();
-        setWorkflowResult({ isRunning: false, success: result.success, output: result.output, error: result.error });
+        const result = await executeCode(workflowCode, url);
+        if (!result.success && autoFixEnabled) {
+          setWorkflowResult({ isRunning: true });
+          await autoFixRoutine(workflowCode, result.error, url);
+        } else {
+          setWorkflowResult({ isRunning: false, success: result.success, output: result.output, error: result.error });
+        }
       } catch {
         setWorkflowResult({ isRunning: false, success: false, error: "Failed to connect to engine. Is it running on port 8000?" });
       }
@@ -388,6 +480,7 @@ ${workflowCommand ? `USER INSTRUCTION: ${workflowCommand}` : ''}`;
   const actionIcon = (action: string) => {
     if (action === 'click') return <MousePointerClick size={12} />;
     if (action === 'type') return <Type size={12} />;
+    if (action === 'press_enter') return <CornerDownLeft size={12} />;
     return <FileOutput size={12} />;
   };
 
@@ -541,7 +634,8 @@ ${workflowCommand ? `USER INSTRUCTION: ${workflowCommand}` : ''}`;
                   {workflowCode && (
                     <div className="code-result fade-in">
                       <div className="code-header"><span>Playwright Python ({actionSequence.length} steps)</span><div className="code-actions">
-                        <button className="run-btn" onClick={runWorkflowLive} disabled={workflowResult?.isRunning}>{workflowResult?.isRunning ? <Loader2 size={14} className="spin" /> : <Zap size={14} />}Run Live</button>
+                        <label className="autofix-toggle"><input type="checkbox" checked={autoFixEnabled} onChange={(e) => setAutoFixEnabled(e.target.checked)} /><span className="toggle-slider" />Auto-Fix</label>
+                        <button className="run-btn" onClick={runWorkflowLive} disabled={workflowResult?.isRunning || healingStatus?.active}>{healingStatus?.active ? <RefreshCw size={14} className="spin" /> : workflowResult?.isRunning ? <Loader2 size={14} className="spin" /> : <Zap size={14} />}Run Live</button>
                         <button className="copy-btn" onClick={() => copyToClipboard(workflowCode, 'workflow')}>{copiedCodeIndex === 'workflow' ? <CheckCircle size={14} /> : <Copy size={14} />}</button>
                       </div></div>
                       <pre className="python-display"><code>{workflowCode}</code></pre>
@@ -552,9 +646,16 @@ ${workflowCommand ? `USER INSTRUCTION: ${workflowCommand}` : ''}`;
                     </div>
                   )}
 
-                  {workflowResult && !workflowResult.isRunning && (
+                  {healingStatus?.active && (
+                    <div className="healing-banner fade-in">
+                      <RefreshCw size={14} className="spin" />
+                      Healing (Attempt {healingStatus.attempt}/{healingStatus.maxAttempts})...
+                    </div>
+                  )}
+
+                  {workflowResult && !workflowResult.isRunning && !healingStatus?.active && (
                     <div className={`terminal-output fade-in ${workflowResult.success ? 'success' : 'error'}`}>
-                      <div className="terminal-header"><Terminal size={14} /><span>Output</span><span className={`status-badge ${workflowResult.success ? 'status-success' : 'status-error'}`}>{workflowResult.success ? 'Success' : 'Failed'}</span></div>
+                      <div className="terminal-header"><Terminal size={14} /><span>Output</span>{workflowResult.healed ? <span className="status-healed">Success (Healed)</span> : <span className={`status-badge ${workflowResult.success ? 'status-success' : 'status-error'}`}>{workflowResult.success ? 'Success' : 'Failed'}</span>}</div>
                       <pre className="terminal-body"><code>{workflowResult.success ? workflowResult.output : workflowResult.error}</code></pre>
                     </div>
                   )}
