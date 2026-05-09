@@ -1,24 +1,16 @@
 import { useState, useEffect } from 'react';
-import { Target, Copy, CheckCircle, Code2, Trash2, Settings, Home, Loader2, Play, Terminal, Zap, Shield, Save, ChevronDown } from 'lucide-react';
+import { Target, Copy, CheckCircle, Code2, Trash2, Settings, Home, Loader2, Play, Terminal, Zap, Shield, Save, ChevronDown, X, MousePointerClick, Type, FileOutput } from 'lucide-react';
 import './App.css';
 
-interface SniperShot {
+interface ActionStep {
   id: string;
+  action: 'click' | 'type' | 'extract';
   selector: string;
   xpath: string;
   innerText: string;
   contextText?: string;
-  command?: string;
-  generatedCode?: string;
-  isGenerating?: boolean;
-  error?: string;
-  taskName?: string;
-  executionResult?: {
-    isRunning?: boolean;
-    success?: boolean;
-    output?: string;
-    error?: string;
-  };
+  typeValue?: string;
+  timestamp: number;
 }
 
 interface SavedTask {
@@ -58,10 +50,17 @@ const ANTHROPIC_MODELS = [
 
 function App() {
   const [activeTab, setActiveTab] = useState<'home' | 'settings' | 'armory'>('home');
-  const [shots, setShots] = useState<SniperShot[]>([]);
   const [savedTasks, setSavedTasks] = useState<SavedTask[]>([]);
-  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const [copiedCodeIndex, setCopiedCodeIndex] = useState<string | null>(null);
+
+  // Action Sequence state
+  const [actionSequence, setActionSequence] = useState<ActionStep[]>([]);
+  const [workflowCommand, setWorkflowCommand] = useState<string>('');
+  const [workflowCode, setWorkflowCode] = useState<string | undefined>();
+  const [workflowGenerating, setWorkflowGenerating] = useState(false);
+  const [workflowError, setWorkflowError] = useState<string | undefined>();
+  const [workflowTaskName, setWorkflowTaskName] = useState('');
+  const [workflowResult, setWorkflowResult] = useState<{ isRunning?: boolean; success?: boolean; output?: string; error?: string } | undefined>();
 
   // Settings State
   const [provider, setProvider] = useState<Provider>('openai');
@@ -70,7 +69,6 @@ function App() {
   const [customModel, setCustomModel] = useState<string>('');
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
   const [isModelsLoading, setIsModelsLoading] = useState(false);
-
 
   const activateSniper = () => {
     chrome.tabs?.query({ active: true, currentWindow: true }, (tabs) => {
@@ -88,7 +86,6 @@ function App() {
   };
 
   useEffect(() => {
-    // Load settings and tasks from storage
     if (chrome.storage && chrome.storage.local) {
       chrome.storage.local.get(['provider', 'apiKey', 'model', 'customModel', 'savedTasks'], (result) => {
         if (result.provider) setProvider(result.provider as Provider);
@@ -99,25 +96,26 @@ function App() {
       });
     }
 
-    // Try to activate sniper on load
     setTimeout(activateSniper, 500);
 
     const messageListener = (request: any) => {
-      if (request.type === 'SNIPER_SHOT') {
-        const newShot: SniperShot = {
+      if (request.type === 'SNIPER_ACTION') {
+        const step: ActionStep = {
           id: Math.random().toString(36).substr(2, 9),
-          ...request.data,
-          command: '',
-          taskName: ''
+          action: request.data.action,
+          selector: request.data.selector,
+          xpath: request.data.xpath,
+          innerText: request.data.innerText || '',
+          contextText: request.data.contextText,
+          typeValue: request.data.typeValue,
+          timestamp: Date.now(),
         };
-        setShots(prev => [newShot, ...prev]);
+        setActionSequence(prev => [...prev, step]);
       } else if (request.type === 'CONTENT_SCRIPT_READY') {
-        // Content script just loaded on a new page, activate it!
         activateSniper();
       }
     };
-    
-    // Listen for tab updates (refreshes) to re-activate
+
     const tabUpdateListener = (_tabId: any, changeInfo: any, tab: any) => {
       if (changeInfo.status === 'complete' && tab.active) {
         activateSniper();
@@ -138,7 +136,6 @@ function App() {
   const checkEngine = async () => {
     try {
       const res = await fetch('http://127.0.0.1:8000/');
-      // Even if it returns 404, it means the server is UP and responding
       if (res.ok || res.status === 404) setEngineStatus('connected');
       else setEngineStatus('disconnected');
     } catch (e) {
@@ -168,12 +165,10 @@ function App() {
       }
       return;
     }
-
     if (p === 'openrouter') {
       setAvailableModels(POPULAR_OPENROUTER_MODELS);
       return;
     }
-
     setIsModelsLoading(true);
     try {
       let fetchedModels: ModelInfo[] = [];
@@ -196,7 +191,6 @@ function App() {
             .map((m: any) => ({ id: m.name.replace('models/', ''), name: m.displayName || m.name }));
         }
       }
-
       setAvailableModels(fetchedModels);
       if (fetchedModels.length > 0 && (!model || !fetchedModels.find(m => m.id === model))) {
         setModel(fetchedModels[0].id);
@@ -214,25 +208,29 @@ function App() {
     }
   };
 
-  const copyToClipboard = (text: string, index: number | string, type: 'json' | 'code') => {
+  const copyToClipboard = (text: string, index: string) => {
     navigator.clipboard.writeText(text);
-    if (type === 'json') {
-      setCopiedIndex(index as number);
-      setTimeout(() => setCopiedIndex(null), 2000);
-    } else {
-      setCopiedCodeIndex(index as string);
-      setTimeout(() => setCopiedCodeIndex(null), 2000);
-    }
+    setCopiedCodeIndex(index);
+    setTimeout(() => setCopiedCodeIndex(null), 2000);
   };
 
-  const generateAPI = async (shot: SniperShot) => {
+  // ---- Workflow API Generation ----
+  const generateWorkflowAPI = async () => {
     const activeModel = (provider === 'openrouter' && model === 'custom') ? customModel : model;
-    
     if (!apiKey) return alert("Please configure your API Key in Settings.");
-    if (!shot.command?.trim()) return alert("Please enter a command.");
+    if (actionSequence.length === 0) return alert("Add at least one action step.");
     if (!activeModel) return alert("Please select a model in Settings.");
 
-    setShots(prev => prev.map(s => s.id === shot.id ? { ...s, isGenerating: true, error: undefined, generatedCode: undefined } : s));
+    setWorkflowGenerating(true);
+    setWorkflowError(undefined);
+    setWorkflowCode(undefined);
+
+    const stepsDescription = actionSequence.map((s, i) => {
+      let desc = `Step ${i + 1}: [${s.action.toUpperCase()}] selector="${s.selector}" xpath="${s.xpath}" elementText="${s.innerText.slice(0, 100)}"`;
+      if (s.action === 'type' && s.typeValue) desc += ` typeValue="${s.typeValue}"`;
+      if (s.contextText) desc += ` context="${s.contextText.slice(0, 300)}"`;
+      return desc;
+    }).join('\n');
 
     const systemPrompt = `You are an expert Python Playwright automation engineer. Return ONLY raw Python code. No markdown, no \`\`\`python, no explanations.
 
@@ -241,38 +239,29 @@ ENVIRONMENT:
 - Do NOT call sync_playwright(), do NOT launch a browser, do NOT call page.goto(). These are already done for you.
 - Just write the interaction/extraction code.
 
+You will receive an ACTION SEQUENCE — an ordered list of steps the user recorded on a web page.
+Generate a single Python script that executes ALL steps in sequential order.
+
+ACTION TYPES:
+- "click": Click the element. Use page.locator(selector).click(timeout=10000)
+- "type": Click the element then type text into it. Use page.locator(selector).fill(value, timeout=10000)
+- "extract": Extract text content from the element. Use page.locator(selector).text_content(timeout=10000) and print() the result.
+
 MANDATORY RULES — VIOLATION MEANS BROKEN CODE:
-1. ONLY use these Playwright locator methods: page.locator(css_or_xpath_selector), page.get_by_text(text). 
-2. page.get_by_text() accepts ONLY (text, exact=bool). NO other keyword arguments like 'selector'.
-3. page.locator() accepts a CSS selector string or "xpath=..." string. That's it.
-4. NEVER guess HTML tag names. NEVER use locators like "p:has-text(...)" or "div:has-text(...)".
-5. To extract data near a captured element, ALWAYS use this proven pattern:
-   container = page.locator("${shot.selector}").first.locator("xpath=..")
-   full_text = container.text_content()
-   # Then use Python string parsing (split, regex, etc.) on full_text
-6. If the container text doesn't have what you need, go one more level up:
-   container = page.locator("${shot.selector}").first.locator("xpath=../..")
-7. Always add timeout=10000 to any .text_content() or .click() call.
-8. Always print results to stdout.
+1. Before EVERY interaction, wait for the element: page.wait_for_selector(selector, timeout=15000)
+2. Between EVERY step, add: page.wait_for_timeout(1000)
+3. After any click that may trigger navigation or page changes, add: page.wait_for_load_state("domcontentloaded")
+4. Always add timeout=10000 to .click(), .fill(), .text_content() calls.
+5. Always print extracted data to stdout.
+6. Wrap the entire script in a try/except with meaningful error messages that identify which step failed.
+7. Use the CSS selector as primary. If the CSS selector looks too generic, use xpath= prefix with the XPath instead.
+8. ONLY use these Playwright locator methods: page.locator(css_or_xpath_selector).
+9. NEVER guess HTML tag names. NEVER use locators like "p:has-text(...)" or "div:has-text(...)".
 
-WORKING EXAMPLE (for extracting data near a heading):
-\`\`\`
-container = page.locator("h3.country-name", has_text="Andorra").first.locator("xpath=..")
-text = container.text_content(timeout=10000)
-# text might be: "Andorra\\nCapital: Andorra la Vella\\nPopulation: 84000\\nArea: 468.0"
-import re
-for line in text.strip().split("\\n"):
-    line = line.strip()
-    if line:
-        print(line)
-\`\`\`
+ACTION SEQUENCE:
+${stepsDescription}
 
-CONTEXT FOR THIS TASK:
-Captured Selector: ${shot.selector}
-Captured XPath: ${shot.xpath}  
-Captured Element Text: ${shot.innerText}
-Surrounding Context: ${shot.contextText || 'Not available'}
-User Command: ${shot.command}`;
+${workflowCommand ? `USER INSTRUCTION: ${workflowCommand}` : ''}`;
 
     try {
       let code = '';
@@ -283,13 +272,11 @@ User Command: ${shot.command}`;
           headers['HTTP-Referer'] = 'https://websniper.extension';
           headers['X-Title'] = 'WebSniper';
         }
-
         const res = await fetch(url, {
-          method: 'POST',
-          headers,
+          method: 'POST', headers,
           body: JSON.stringify({
             model: activeModel,
-            messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: `Command: ${shot.command}` }]
+            messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: `Execute the action sequence above.` }]
           })
         });
         const data = await res.json();
@@ -305,10 +292,8 @@ User Command: ${shot.command}`;
             'anthropic-dangerous-direct-browser-access': 'true'
           },
           body: JSON.stringify({
-            model: activeModel,
-            max_tokens: 1024,
-            system: systemPrompt,
-            messages: [{ role: 'user', content: `Command: ${shot.command}` }]
+            model: activeModel, max_tokens: 2048, system: systemPrompt,
+            messages: [{ role: 'user', content: `Execute the action sequence above.` }]
           })
         });
         const data = await res.json();
@@ -319,19 +304,40 @@ User Command: ${shot.command}`;
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            contents: [{ parts: [{ text: `${systemPrompt}\n\nCommand: ${shot.command}` }] }]
+            contents: [{ parts: [{ text: `${systemPrompt}\n\nExecute the action sequence above.` }] }]
           })
         });
         const data = await res.json();
         if (data.error) throw new Error(data.error.message);
         code = data.candidates[0].content.parts[0].text;
       }
-
       code = code.replace(/^```python\n?/, '').replace(/```$/, '').trim();
-      setShots(prev => prev.map(s => s.id === shot.id ? { ...s, isGenerating: false, generatedCode: code } : s));
+      setWorkflowCode(code);
     } catch (err: any) {
-      setShots(prev => prev.map(s => s.id === shot.id ? { ...s, isGenerating: false, error: err.message || "Failed to generate script" } : s));
+      setWorkflowError(err.message || "Failed to generate script");
+    } finally {
+      setWorkflowGenerating(false);
     }
+  };
+
+  const runWorkflowLive = async () => {
+    if (!workflowCode) return;
+    setWorkflowResult({ isRunning: true });
+    chrome.tabs?.query({ active: true, currentWindow: true }, async (tabs) => {
+      const tab = tabs[0];
+      const url = tab?.url || '';
+      try {
+        const res = await fetch('http://127.0.0.1:8000/execute', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: workflowCode, url })
+        });
+        const result = await res.json();
+        setWorkflowResult({ isRunning: false, success: result.success, output: result.output, error: result.error });
+      } catch {
+        setWorkflowResult({ isRunning: false, success: false, error: "Failed to connect to engine. Is it running on port 8000?" });
+      }
+    });
   };
 
   const runSavedTask = async (task: SavedTask) => {
@@ -345,49 +351,34 @@ User Command: ${shot.command}`;
       });
       const result = await res.json();
       setSavedTasks(prev => prev.map(t => t.id === task.id ? { ...t, executionResult: { isRunning: false, success: result.success, output: result.output, error: result.error } } : t));
-    } catch (err) {
+    } catch {
       setSavedTasks(prev => prev.map(t => t.id === task.id ? { ...t, executionResult: { isRunning: false, success: false, error: "Failed to connect to engine. Is it running on port 8000?" } } : t));
     }
   };
 
-  const runLive = async (shot: SniperShot) => {
-    if (!shot.generatedCode) return;
-    setShots(prev => prev.map(s => s.id === shot.id ? { ...s, executionResult: { isRunning: true } } : s));
-    chrome.tabs?.query({ active: true, currentWindow: true }, async (tabs) => {
-      const activeTab = tabs[0];
-      const url = activeTab?.url || '';
-      
-      try {
-        const res = await fetch('http://127.0.0.1:8000/execute', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ code: shot.generatedCode, url: url })
-        });
-        const result = await res.json();
-        setShots(prev => prev.map(s => s.id === shot.id ? { ...s, executionResult: { isRunning: false, success: result.success, output: result.output, error: result.error } } : s));
-      } catch (err) {
-        setShots(prev => prev.map(s => s.id === shot.id ? { ...s, executionResult: { isRunning: false, success: false, error: "Failed to connect to engine. Is it running on port 8000?" } } : s));
-      }
-    });
-  };
-
-  const saveTaskToArmory = (shot: SniperShot) => {
-    if (!shot.generatedCode || !shot.taskName?.trim()) return alert("Task name required.");
+  const saveWorkflowToArmory = () => {
+    if (!workflowCode || !workflowTaskName.trim()) return alert("Task name required.");
     chrome.tabs?.query({ active: true, currentWindow: true }, (tabs) => {
-      const newTask: SavedTask = { id: Math.random().toString(36).substr(2, 9), name: shot.taskName!.trim(), url: tabs[0]?.url || 'Unknown', code: shot.generatedCode! };
+      const newTask: SavedTask = { id: Math.random().toString(36).substr(2, 9), name: workflowTaskName.trim(), url: tabs[0]?.url || 'Unknown', code: workflowCode };
       const updated = [newTask, ...savedTasks];
       setSavedTasks(updated);
-      chrome.storage.local.set({ savedTasks: updated }, () => updateShotTaskName(shot.id, ''));
+      chrome.storage.local.set({ savedTasks: updated }, () => setWorkflowTaskName(''));
     });
   };
 
-  const updateShotCommand = (id: string, command: string) => setShots(prev => prev.map(s => s.id === id ? { ...s, command } : s));
-  const updateShotTaskName = (id: string, taskName: string) => setShots(prev => prev.map(s => s.id === id ? { ...s, taskName } : s));
-  const clearShots = () => setShots([]);
+  const removeStep = (id: string) => setActionSequence(prev => prev.filter(s => s.id !== id));
+  const clearSequence = () => { setActionSequence([]); setWorkflowCode(undefined); setWorkflowError(undefined); setWorkflowResult(undefined); };
+
   const deleteSavedTask = (id: string) => {
     const updated = savedTasks.filter(t => t.id !== id);
     setSavedTasks(updated);
     chrome.storage.local.set({ savedTasks: updated });
+  };
+
+  const actionIcon = (action: string) => {
+    if (action === 'click') return <MousePointerClick size={12} />;
+    if (action === 'type') return <Type size={12} />;
+    return <FileOutput size={12} />;
   };
 
   return (
@@ -401,7 +392,7 @@ User Command: ${shot.command}`;
             <button className={`tab-btn ${activeTab === 'settings' ? 'active' : ''}`} onClick={() => setActiveTab('settings')}><Settings size={18} /></button>
           </div>
         </div>
-        <p className="subtitle">Aim, Click, Capture.</p>
+        <p className="subtitle">Aim, Click, Automate.</p>
       </header>
 
       <div className="main-content">
@@ -421,7 +412,6 @@ User Command: ${shot.command}`;
               <label>API Key</label>
               <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} onBlur={saveSettings} placeholder="Enter API Key" className="text-input" />
             </div>
-
             <div className="form-group">
               <label>Model {isModelsLoading && <Loader2 size={12} className="spin inline-loader" />}</label>
               <div className="select-wrapper">
@@ -431,14 +421,12 @@ User Command: ${shot.command}`;
                 <ChevronDown size={16} className="select-icon" />
               </div>
             </div>
-
             {provider === 'openrouter' && model === 'custom' && (
               <div className="form-group fade-in">
                 <label>Custom Model ID</label>
                 <input type="text" value={customModel} onChange={(e) => setCustomModel(e.target.value)} onBlur={saveSettings} placeholder="e.g., meta-llama/llama-3-70b" className="text-input" />
               </div>
             )}
-            
             <button className="btn-primary" onClick={saveSettings}>Save Settings</button>
           </div>
         )}
@@ -456,7 +444,7 @@ User Command: ${shot.command}`;
                       <div className="code-result">
                         <div className="code-header"><span>Playwright Python</span><div className="code-actions">
                           <button className="run-btn" onClick={() => runSavedTask(task)} disabled={task.executionResult?.isRunning}>{task.executionResult?.isRunning ? <Loader2 size={14} className="spin" /> : <Zap size={14} />}Run Now</button>
-                          <button className="copy-btn" onClick={() => copyToClipboard(task.code, task.id, 'code')}>{copiedCodeIndex === task.id ? <CheckCircle size={14} /> : <Copy size={14} />}</button>
+                          <button className="copy-btn" onClick={() => copyToClipboard(task.code, task.id)}>{copiedCodeIndex === task.id ? <CheckCircle size={14} /> : <Copy size={14} />}</button>
                         </div></div>
                       </div>
                       {task.executionResult && !task.executionResult.isRunning && (
@@ -478,56 +466,86 @@ User Command: ${shot.command}`;
             <div className="controls">
               <div className="status-group">
                 <span className="badge"><span className="dot"></span> Active</span>
-                <button className="mini-btn" onClick={activateSniper} title="Re-sync Targeting">
-                  <Zap size={12} />
-                </button>
+                <button className="mini-btn" onClick={activateSniper} title="Re-sync Targeting"><Zap size={12} /></button>
                 <div className={`engine-badge ${engineStatus}`}>
                   <Terminal size={12} />
                   <span>Engine: {engineStatus}</span>
                 </div>
               </div>
-              {shots.length > 0 && <button className="clear-btn" onClick={clearShots}><Trash2 size={16} /></button>}
             </div>
-            {shots.length === 0 ? <div className="empty-state"><Code2 size={48} className="empty-icon" /><p>Capture elements to begin.</p></div> : (
-              <div className="shots-list">
-                {shots.map((shot, idx) => (
-                  <div key={shot.id} className="shot-card fade-in">
-                    <div className="shot-header">
-                      <span className="shot-title">Shot #{shots.length - idx}</span>
-                      <button className="copy-btn" onClick={() => copyToClipboard(JSON.stringify({ selector: shot.selector, xpath: shot.xpath, innerText: shot.innerText }, null, 2), idx, 'json')}>{copiedIndex === idx ? <CheckCircle size={16} /> : <Copy size={16} />}</button>
-                    </div>
-                    <div className="shot-body">
-                      <pre className="json-display"><code><span className="json-key">"selector"</span>: <span className="json-string">"{shot.selector}"</span>,<br/><span className="json-key">"xpath"</span>: <span className="json-string">"{shot.xpath}"</span>,<br/><span className="json-key">"innerText"</span>: <span className="json-string">"{shot.innerText.slice(0, 50)}..."</span></code></pre>
-                      <div className="ai-section">
-                        <div className="command-input-group">
-                          <input type="text" className="text-input command-input" placeholder="Command..." value={shot.command} onChange={(e) => updateShotCommand(shot.id, e.target.value)} />
-                          <button className="btn-primary icon-btn" onClick={() => generateAPI(shot)} disabled={shot.isGenerating}>{shot.isGenerating ? <Loader2 size={16} className="spin" /> : <Play size={16} />}</button>
+
+            {actionSequence.length === 0 ? (
+              <div className="workflow-empty-hint">
+                <Code2 size={48} className="hint-icon" />
+                <p>Click elements on the page to build your workflow.<br />Choose <strong>Click</strong>, <strong>Type Text</strong>, or <strong>Extract</strong> for each step.</p>
+              </div>
+            ) : (
+              <>
+                <div className="timeline-header">
+                  <span className="timeline-title">Action Sequence <span className="step-count">{actionSequence.length}</span></span>
+                  <button className="clear-all-btn" onClick={clearSequence}><Trash2 size={12} /> Clear All</button>
+                </div>
+
+                <div className="action-timeline">
+                  {actionSequence.map((step, idx) => (
+                    <div key={step.id} className="timeline-step">
+                      <div className="step-header">
+                        <span className="step-badge">{idx + 1}</span>
+                        <span className={`action-pill ${step.action}`}>
+                          {actionIcon(step.action)} {step.action}
+                        </span>
+                        <button className="step-delete" onClick={() => removeStep(step.id)} title="Remove step"><X size={14} /></button>
+                      </div>
+                      <div className="step-detail">
+                        <span className="selector-label">sel: </span>{step.selector}
+                      </div>
+                      {step.innerText && (
+                        <div className="step-text-preview">"{step.innerText.slice(0, 60)}{step.innerText.length > 60 ? '…' : ''}"</div>
+                      )}
+                      {step.action === 'type' && step.typeValue && (
+                        <div className="step-type-value">
+                          <span className="type-label">TYPE:</span> {step.typeValue}
                         </div>
-                        {shot.error && <div className="error-message">{shot.error}</div>}
-                        {shot.generatedCode && (
-                          <div className="code-result fade-in">
-                            <div className="code-header"><span>Python</span><div className="code-actions">
-                              <button className="run-btn" onClick={() => runLive(shot)} disabled={shot.executionResult?.isRunning}>{shot.executionResult?.isRunning ? <Loader2 size={14} className="spin" /> : <Zap size={14} />}Run Live</button>
-                              <button className="copy-btn" onClick={() => copyToClipboard(shot.generatedCode!, shot.id, 'code')}>{copiedCodeIndex === shot.id ? <CheckCircle size={14} /> : <Copy size={14} />}</button>
-                            </div></div>
-                            <pre className="python-display"><code>{shot.generatedCode}</code></pre>
-                            <div className="save-task-section">
-                               <input type="text" className="text-input save-task-input" placeholder="Task Name" value={shot.taskName} onChange={(e) => updateShotTaskName(shot.id, e.target.value)} />
-                               <button className="save-btn" onClick={() => saveTaskToArmory(shot)}><Save size={14} />Save</button>
-                            </div>
-                          </div>
-                        )}
-                        {shot.executionResult && !shot.executionResult.isRunning && (
-                          <div className={`terminal-output fade-in ${shot.executionResult.success ? 'success' : 'error'}`}>
-                            <div className="terminal-header"><Terminal size={14} /><span>Output</span><span className={`status-badge ${shot.executionResult.success ? 'status-success' : 'status-error'}`}>{shot.executionResult.success ? 'Success' : 'Failed'}</span></div>
-                            <pre className="terminal-body"><code>{shot.executionResult.success ? shot.executionResult.output : shot.executionResult.error}</code></pre>
-                          </div>
-                        )}
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                {/* Generate Section */}
+                <div className="workflow-generate">
+                  <div className="workflow-generate-header"><Play size={14} /> Generate Workflow Script</div>
+                  <div className="workflow-command-group">
+                    <input type="text" className="text-input workflow-command-input" placeholder="Optional: describe your workflow goal..." value={workflowCommand} onChange={(e) => setWorkflowCommand(e.target.value)} />
+                    <button className="btn-generate" onClick={generateWorkflowAPI} disabled={workflowGenerating}>
+                      {workflowGenerating ? <Loader2 size={16} className="spin" /> : <Zap size={16} />}
+                      Generate
+                    </button>
+                  </div>
+
+                  {workflowError && <div className="error-message">{workflowError}</div>}
+
+                  {workflowCode && (
+                    <div className="code-result fade-in">
+                      <div className="code-header"><span>Playwright Python ({actionSequence.length} steps)</span><div className="code-actions">
+                        <button className="run-btn" onClick={runWorkflowLive} disabled={workflowResult?.isRunning}>{workflowResult?.isRunning ? <Loader2 size={14} className="spin" /> : <Zap size={14} />}Run Live</button>
+                        <button className="copy-btn" onClick={() => copyToClipboard(workflowCode, 'workflow')}>{copiedCodeIndex === 'workflow' ? <CheckCircle size={14} /> : <Copy size={14} />}</button>
+                      </div></div>
+                      <pre className="python-display"><code>{workflowCode}</code></pre>
+                      <div className="save-task-section">
+                        <input type="text" className="text-input save-task-input" placeholder="Task Name" value={workflowTaskName} onChange={(e) => setWorkflowTaskName(e.target.value)} />
+                        <button className="save-btn" onClick={saveWorkflowToArmory}><Save size={14} />Save</button>
                       </div>
                     </div>
-                  </div>
-                ))}
-              </div>
+                  )}
+
+                  {workflowResult && !workflowResult.isRunning && (
+                    <div className={`terminal-output fade-in ${workflowResult.success ? 'success' : 'error'}`}>
+                      <div className="terminal-header"><Terminal size={14} /><span>Output</span><span className={`status-badge ${workflowResult.success ? 'status-success' : 'status-error'}`}>{workflowResult.success ? 'Success' : 'Failed'}</span></div>
+                      <pre className="terminal-body"><code>{workflowResult.success ? workflowResult.output : workflowResult.error}</code></pre>
+                    </div>
+                  )}
+                </div>
+              </>
             )}
           </>
         )}
