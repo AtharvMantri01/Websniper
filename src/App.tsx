@@ -29,6 +29,9 @@ interface SavedTask {
     success?: boolean;
     output?: string;
     error?: string;
+    healingAttempt?: number;
+    maxAttempts?: number;
+    healed?: boolean;
   };
 }
 
@@ -401,7 +404,7 @@ ${jsonSchema.trim()}` : ''}`;
   };
 
   // ---- Auto-Fix Healing Loop ----
-  const autoFixRoutine = async (failedCode: string, errorTrace: string, pageUrl: string) => {
+  const autoFixRoutine = async (failedCode: string, errorTrace: string, pageUrl: string, savedTaskId?: string) => {
     const maxAttempts = 3;
     let currentCode = failedCode;
     let currentError = errorTrace;
@@ -423,16 +426,33 @@ COMMON FIXES TO APPLY:
 Do NOT change the overall logic or goal. Only fix what caused the error.`;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      setHealingStatus({ active: true, attempt, maxAttempts });
+      if (savedTaskId) {
+        setSavedTasks(prev => prev.map(t => t.id === savedTaskId ? { ...t, executionResult: { ...t.executionResult, isRunning: true, healingAttempt: attempt, maxAttempts } } : t));
+      } else {
+        setHealingStatus({ active: true, attempt, maxAttempts });
+      }
 
       try {
         const fixedCode = await callLLM(healPrompt, `FAILED CODE:\n${currentCode}\n\nERROR TRACE:\n${currentError}`);
         const result = await executeCode(fixedCode, pageUrl);
 
         if (result.success) {
-          setWorkflowCode(fixedCode);
-          setWorkflowResult({ isRunning: false, success: true, output: result.output, healed: true });
-          setHealingStatus(undefined);
+          if (savedTaskId) {
+            let updatedTask: SavedTask | null = null;
+            setSavedTasks(prev => {
+              const task = prev.find(t => t.id === savedTaskId);
+              if (!task) return prev;
+              updatedTask = { ...task, code: fixedCode, executionResult: { isRunning: false, success: true, output: result.output, healed: true } };
+              const updatedTasks = prev.map(t => t.id === savedTaskId ? updatedTask! : t);
+              chrome.storage.local.set({ savedTasks: updatedTasks });
+              return updatedTasks;
+            });
+            if (updatedTask) deployTaskToRunner(updatedTask);
+          } else {
+            setWorkflowCode(fixedCode);
+            setWorkflowResult({ isRunning: false, success: true, output: result.output, healed: true });
+            setHealingStatus(undefined);
+          }
           return;
         } else {
           currentCode = fixedCode;
@@ -444,8 +464,12 @@ Do NOT change the overall logic or goal. Only fix what caused the error.`;
     }
 
     // All attempts failed
-    setHealingStatus(undefined);
-    setWorkflowResult({ isRunning: false, success: false, error: `Auto-Fix failed after ${maxAttempts} attempts.\n\nLast error:\n${currentError}` });
+    if (savedTaskId) {
+      setSavedTasks(prev => prev.map(t => t.id === savedTaskId ? { ...t, executionResult: { isRunning: false, success: false, error: `Auto-Fix failed after ${maxAttempts} attempts.\n\nLast error:\n${currentError}` } } : t));
+    } else {
+      setHealingStatus(undefined);
+      setWorkflowResult({ isRunning: false, success: false, error: `Auto-Fix failed after ${maxAttempts} attempts.\n\nLast error:\n${currentError}` });
+    }
   };
 
   const runWorkflowLive = async () => {
@@ -479,7 +503,11 @@ Do NOT change the overall logic or goal. Only fix what caused the error.`;
         body: JSON.stringify({ code: task.code, url: task.url })
       });
       const result = await res.json();
-      setSavedTasks(prev => prev.map(t => t.id === task.id ? { ...t, executionResult: { isRunning: false, success: result.success, output: result.output, error: result.error } } : t));
+      if (!result.success && autoFixEnabled) {
+        await autoFixRoutine(task.code, result.error, task.url, task.id);
+      } else {
+        setSavedTasks(prev => prev.map(t => t.id === task.id ? { ...t, executionResult: { isRunning: false, success: result.success, output: result.output, error: result.error } } : t));
+      }
     } catch {
       setSavedTasks(prev => prev.map(t => t.id === task.id ? { ...t, executionResult: { isRunning: false, success: false, error: "Failed to connect to engine. Is it running on port 8000?" } } : t));
     }
@@ -536,6 +564,17 @@ Do NOT change the overall logic or goal. Only fix what caused the error.`;
 
   const sanitizeTaskName = (name: string) => {
     return name.trim().toLowerCase().replace(/[^a-z0-9_\-]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '') || 'unnamed_task';
+  };
+
+  const deployTaskToRunner = async (task: SavedTask) => {
+    try {
+      await fetch('http://127.0.0.1:8000/tasks/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: task.name, code: task.code, url: task.url, inputs: task.inputs || [] })
+      });
+    } catch { /* Runner offline */ }
+    setExpandedApiTaskId(expandedApiTaskId === task.id ? null : task.id);
   };
 
   return (
@@ -598,7 +637,7 @@ Do NOT change the overall logic or goal. Only fix what caused the error.`;
                     <div className="shot-header">
                       <span className="shot-title">{task.name}</span>
                       <div style={{display: 'flex', gap: '0.375rem', alignItems: 'center'}}>
-                        <button className={`deploy-btn ${expandedApiTaskId === task.id ? 'active' : ''}`} onClick={() => setExpandedApiTaskId(expandedApiTaskId === task.id ? null : task.id)} title="Deploy as API"><Rocket size={12} />API</button>
+                        <button className={`deploy-btn ${expandedApiTaskId === task.id ? 'active' : ''}`} onClick={() => deployTaskToRunner(task)} title="Deploy as API"><Rocket size={12} />API</button>
                         <button className="clear-btn" onClick={() => deleteSavedTask(task.id)}><Trash2 size={16} /></button>
                       </div>
                     </div>
@@ -606,13 +645,16 @@ Do NOT change the overall logic or goal. Only fix what caused the error.`;
                       <div className="task-url"><span className="json-key">URL:</span> <span className="json-string">{task.url}</span></div>
                       <div className="code-result">
                         <div className="code-header"><span>Playwright Python</span><div className="code-actions">
-                          <button className="run-btn" onClick={() => runSavedTask(task)} disabled={task.executionResult?.isRunning}>{task.executionResult?.isRunning ? <Loader2 size={14} className="spin" /> : <Zap size={14} />}Run Now</button>
+                          <button className="run-btn" onClick={() => runSavedTask(task)} disabled={task.executionResult?.isRunning}>
+                            {task.executionResult?.isRunning ? <Loader2 size={14} className="spin" /> : <Zap size={14} />}
+                            {task.executionResult?.healingAttempt ? `Healing (${task.executionResult.healingAttempt}/${task.executionResult.maxAttempts})...` : task.executionResult?.isRunning ? 'Running...' : 'Run Now'}
+                          </button>
                           <button className="copy-btn" onClick={() => copyToClipboard(task.code, task.id)}>{copiedCodeIndex === task.id ? <CheckCircle size={14} /> : <Copy size={14} />}</button>
                         </div></div>
                       </div>
                       {task.executionResult && !task.executionResult.isRunning && (
                         <div className={`terminal-output fade-in ${task.executionResult.success ? 'success' : 'error'}`}>
-                          <div className="terminal-header"><Terminal size={14} /><span>Output</span><span className={`status-badge ${task.executionResult.success ? 'status-success' : 'status-error'}`}>{task.executionResult.success ? 'Success' : 'Failed'}</span></div>
+                          <div className="terminal-header"><Terminal size={14} /><span>Output</span><span className={`status-badge ${task.executionResult.success ? 'status-success' : 'status-error'}`}>{task.executionResult.healed ? 'Success (Healed)' : task.executionResult.success ? 'Success' : 'Failed'}</span></div>
                           <pre className="terminal-body"><code>{task.executionResult.success ? task.executionResult.output : task.executionResult.error}</code></pre>
                         </div>
                       )}
