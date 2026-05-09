@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+venv/
+env/
+.env
+
+# API / Build outputs
+dist/
+build/
+*.pyc
+__pycache__/
+
+# BYOK Security (CRITICAL)
+secrets.json
+config.local.js
+
+# OS Files
+.DS_Store
+Thumbs.db
