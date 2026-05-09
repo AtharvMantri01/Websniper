@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Target, Copy, CheckCircle, Code2, Trash2, Settings, Home, Loader2, Play, Terminal, Zap, Shield, Save, ChevronDown, X, MousePointerClick, Type, FileOutput, CornerDownLeft, RefreshCw } from 'lucide-react';
+import { Target, Copy, CheckCircle, Code2, Trash2, Settings, Home, Loader2, Play, Terminal, Zap, Shield, Save, ChevronDown, X, MousePointerClick, Type, FileOutput, CornerDownLeft, RefreshCw, ExternalLink, Rocket } from 'lucide-react';
 import './App.css';
 
 interface ActionStep {
@@ -13,11 +13,17 @@ interface ActionStep {
   timestamp: number;
 }
 
+interface TaskInput {
+  name: string;
+  defaultValue: string;
+}
+
 interface SavedTask {
   id: string;
   name: string;
   url: string;
   code: string;
+  inputs?: TaskInput[];
   executionResult?: {
     isRunning?: boolean;
     success?: boolean;
@@ -52,6 +58,7 @@ function App() {
   const [activeTab, setActiveTab] = useState<'home' | 'settings' | 'armory'>('home');
   const [savedTasks, setSavedTasks] = useState<SavedTask[]>([]);
   const [copiedCodeIndex, setCopiedCodeIndex] = useState<string | null>(null);
+  const [expandedApiTaskId, setExpandedApiTaskId] = useState<string | null>(null);
 
   // Action Sequence state
   const [actionSequence, setActionSequence] = useState<ActionStep[]>([]);
@@ -279,6 +286,10 @@ MANDATORY RULES — VIOLATION MEANS BROKEN CODE:
     page.keyboard.type('the text')
     Only use .fill(value, timeout=10000) when the selector is clearly an input, textarea, or [contenteditable] element.
 11. PRESS ENTER RULE: If the action is [PRESS_ENTER], do NOT use any locator or selector. Just call page.keyboard.press('Enter') and then page.wait_for_timeout(2000) to allow backend/API calls to resolve.
+12. PARAMETERIZATION RULE: For EVERY [TYPE] action, you MUST define a Python variable at the TOP of the script (before the try block, after the imports) instead of using a hardcoded string. Name the variable descriptively based on the element context (e.g., search_query, username, email_address, password_field). Then use that variable in .fill() or .keyboard.type(). Example:
+    search_query = "laptop"
+    ...
+    page.keyboard.type(search_query)
 
 ACTION SEQUENCE:
 ${stepsDescription}
@@ -479,7 +490,19 @@ Do NOT change the overall logic or goal. Only fix what caused the error.`;
     chrome.tabs?.query({ active: true, currentWindow: true }, async (tabs) => {
       const taskName = workflowTaskName.trim();
       const taskUrl = tabs[0]?.url || 'Unknown';
-      const newTask: SavedTask = { id: Math.random().toString(36).substr(2, 9), name: taskName, url: taskUrl, code: workflowCode };
+
+      // Extract input parameters from type actions
+      const inputs: TaskInput[] = actionSequence
+        .filter(s => s.action === 'type' && s.typeValue)
+        .map((s, i) => {
+          // Create a descriptive variable name from the element context
+          const label = (s.innerText || s.contextText || `input_${i + 1}`)
+            .slice(0, 30).trim().toLowerCase()
+            .replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || `input_${i + 1}`;
+          return { name: label, defaultValue: s.typeValue! };
+        });
+
+      const newTask: SavedTask = { id: Math.random().toString(36).substr(2, 9), name: taskName, url: taskUrl, code: workflowCode, inputs };
       const updated = [newTask, ...savedTasks];
       setSavedTasks(updated);
       chrome.storage.local.set({ savedTasks: updated }, () => setWorkflowTaskName(''));
@@ -489,7 +512,7 @@ Do NOT change the overall logic or goal. Only fix what caused the error.`;
         await fetch('http://127.0.0.1:8000/tasks/save', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: taskName, code: workflowCode, url: taskUrl })
+          body: JSON.stringify({ name: taskName, code: workflowCode, url: taskUrl, inputs })
         });
       } catch { /* Runner might be offline, task is still saved in extension storage */ }
     });
@@ -509,6 +532,10 @@ Do NOT change the overall logic or goal. Only fix what caused the error.`;
     if (action === 'type') return <Type size={12} />;
     if (action === 'press_enter') return <CornerDownLeft size={12} />;
     return <FileOutput size={12} />;
+  };
+
+  const sanitizeTaskName = (name: string) => {
+    return name.trim().toLowerCase().replace(/[^a-z0-9_\-]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '') || 'unnamed_task';
   };
 
   return (
@@ -568,7 +595,13 @@ Do NOT change the overall logic or goal. Only fix what caused the error.`;
               <div className="shots-list">
                 {savedTasks.map(task => (
                   <div key={task.id} className="shot-card fade-in">
-                    <div className="shot-header"><span className="shot-title">{task.name}</span><button className="clear-btn" onClick={() => deleteSavedTask(task.id)}><Trash2 size={16} /></button></div>
+                    <div className="shot-header">
+                      <span className="shot-title">{task.name}</span>
+                      <div style={{display: 'flex', gap: '0.375rem', alignItems: 'center'}}>
+                        <button className={`deploy-btn ${expandedApiTaskId === task.id ? 'active' : ''}`} onClick={() => setExpandedApiTaskId(expandedApiTaskId === task.id ? null : task.id)} title="Deploy as API"><Rocket size={12} />API</button>
+                        <button className="clear-btn" onClick={() => deleteSavedTask(task.id)}><Trash2 size={16} /></button>
+                      </div>
+                    </div>
                     <div className="shot-body">
                       <div className="task-url"><span className="json-key">URL:</span> <span className="json-string">{task.url}</span></div>
                       <div className="code-result">
@@ -581,6 +614,35 @@ Do NOT change the overall logic or goal. Only fix what caused the error.`;
                         <div className={`terminal-output fade-in ${task.executionResult.success ? 'success' : 'error'}`}>
                           <div className="terminal-header"><Terminal size={14} /><span>Output</span><span className={`status-badge ${task.executionResult.success ? 'status-success' : 'status-error'}`}>{task.executionResult.success ? 'Success' : 'Failed'}</span></div>
                           <pre className="terminal-body"><code>{task.executionResult.success ? task.executionResult.output : task.executionResult.error}</code></pre>
+                        </div>
+                      )}
+                      {expandedApiTaskId === task.id && (
+                        <div className="api-panel fade-in">
+                          <div className="api-panel-title"><Rocket size={14} /> API Integration</div>
+                          <div className="api-endpoint">
+                            <span className="method-badge">POST</span>
+                            <span>http://localhost:8000/api/v1/run/{sanitizeTaskName(task.name)}</span>
+                          </div>
+                          {task.inputs && task.inputs.length > 0 && (
+                            <div className="api-inputs-section">
+                              <div className="api-inputs-label">Customizable Inputs</div>
+                              <div className="api-inputs-list">
+                                {task.inputs.map((inp, i) => (
+                                  <span key={i} className="api-input-chip">
+                                    <span className="chip-name">{inp.name}</span>
+                                    <span className="chip-default">= "{inp.defaultValue}"</span>
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          <div className="api-curl-block">
+                            <pre>{`curl -X POST http://localhost:8000/api/v1/run/${sanitizeTaskName(task.name)} \\
+  -H "Content-Type: application/json" \\
+  -d '${JSON.stringify({ url: task.url, ...(task.inputs && task.inputs.length > 0 ? { inputs: Object.fromEntries(task.inputs.map(inp => [inp.name, inp.defaultValue])) } : {}) })}'`}</pre>
+                            <button className="copy-btn" onClick={() => copyToClipboard(`curl -X POST http://localhost:8000/api/v1/run/${sanitizeTaskName(task.name)} -H "Content-Type: application/json" -d '${JSON.stringify({ url: task.url, ...(task.inputs && task.inputs.length > 0 ? { inputs: Object.fromEntries(task.inputs.map(inp => [inp.name, inp.defaultValue])) } : {}) })}'`, `curl-${task.id}`)}>{copiedCodeIndex === `curl-${task.id}` ? <CheckCircle size={14} /> : <Copy size={14} />}</button>
+                          </div>
+                          <button className="api-docs-link" onClick={() => window.open('http://localhost:8000/docs', '_blank')}><ExternalLink size={12} /> View Interactive API Docs</button>
                         </div>
                       )}
                     </div>
