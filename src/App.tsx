@@ -1,18 +1,39 @@
 import { useState, useEffect } from 'react';
-import { Target, Copy, CheckCircle, Code2, Trash2 } from 'lucide-react';
+import { Target, Copy, CheckCircle, Code2, Trash2, Settings, Home, Loader2, Play } from 'lucide-react';
 import './App.css';
 
 interface SniperShot {
+  id: string;
   selector: string;
   xpath: string;
   innerText: string;
+  command?: string;
+  generatedCode?: string;
+  isGenerating?: boolean;
+  error?: string;
 }
 
+type Provider = 'openai' | 'anthropic';
+
 function App() {
+  const [activeTab, setActiveTab] = useState<'home' | 'settings'>('home');
   const [shots, setShots] = useState<SniperShot[]>([]);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  const [copiedCodeIndex, setCopiedCodeIndex] = useState<string | null>(null);
+
+  // Settings State
+  const [provider, setProvider] = useState<Provider>('openai');
+  const [apiKey, setApiKey] = useState<string>('');
 
   useEffect(() => {
+    // Load settings from storage
+    if (chrome.storage && chrome.storage.local) {
+      chrome.storage.local.get(['provider', 'apiKey'], (result) => {
+        if (result.provider) setProvider(result.provider as Provider);
+        if (result.apiKey) setApiKey(result.apiKey as string);
+      });
+    }
+
     // Inject content script into active tab when side panel opens
     chrome.tabs?.query({ active: true, currentWindow: true }, (tabs) => {
       const activeTab = tabs[0];
@@ -27,7 +48,12 @@ function App() {
     // Listen for incoming shots
     const messageListener = (request: any) => {
       if (request.type === 'SNIPER_SHOT') {
-        setShots(prev => [request.data, ...prev]);
+        const newShot: SniperShot = {
+          id: Math.random().toString(36).substr(2, 9),
+          ...request.data,
+          command: ''
+        };
+        setShots(prev => [newShot, ...prev]);
       }
     };
     
@@ -42,70 +68,259 @@ function App() {
     };
   }, []);
 
-  const copyToClipboard = (data: any, index: number) => {
-    navigator.clipboard.writeText(JSON.stringify(data, null, 2));
-    setCopiedIndex(index);
-    setTimeout(() => setCopiedIndex(null), 2000);
+  const saveSettings = () => {
+    if (chrome.storage && chrome.storage.local) {
+      chrome.storage.local.set({ provider, apiKey });
+    }
+  };
+
+  const copyToClipboard = (text: string, index: number | string, type: 'json' | 'code') => {
+    navigator.clipboard.writeText(text);
+    if (type === 'json') {
+      setCopiedIndex(index as number);
+      setTimeout(() => setCopiedIndex(null), 2000);
+    } else {
+      setCopiedCodeIndex(index as string);
+      setTimeout(() => setCopiedCodeIndex(null), 2000);
+    }
   };
 
   const clearShots = () => setShots([]);
 
+  const updateShotCommand = (id: string, command: string) => {
+    setShots(prev => prev.map(s => s.id === id ? { ...s, command } : s));
+  };
+
+  const generateAPI = async (shot: SniperShot) => {
+    if (!apiKey) {
+      alert("Please configure your API Key in the Settings tab.");
+      return;
+    }
+    if (!shot.command || shot.command.trim() === '') {
+      alert("Please enter a command.");
+      return;
+    }
+
+    // Set generating state
+    setShots(prev => prev.map(s => s.id === shot.id ? { ...s, isGenerating: true, error: undefined, generatedCode: undefined } : s));
+
+    const systemPrompt = `You are an expert Python Playwright engineer. Return ONLY a valid Python code snippet using the synchronous Playwright API (sync_playwright). Do not include any markdown formatting like \`\`\`python wrappers or explanations. Just the raw code.
+Assume the browser and page are already initialized. Just write the code to interact with the element as requested.
+
+Context:
+Selector: ${shot.selector}
+XPath: ${shot.xpath}
+Inner Text: ${shot.innerText.substring(0, 200)}
+`;
+
+    try {
+      let code = '';
+      if (provider === 'openai') {
+        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`
+          },
+          body: JSON.stringify({
+            model: 'gpt-4o-mini',
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: `Command: ${shot.command}` }
+            ]
+          })
+        });
+        const data = await response.json();
+        if (data.error) throw new Error(data.error.message);
+        code = data.choices[0].message.content;
+      } else {
+        const response = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+            'anthropic-dangerous-direct-browser-access': 'true'
+          },
+          body: JSON.stringify({
+            model: 'claude-3-5-sonnet-20241022',
+            max_tokens: 1024,
+            system: systemPrompt,
+            messages: [{ role: 'user', content: `Command: ${shot.command}` }]
+          })
+        });
+        const data = await response.json();
+        if (data.error) throw new Error(data.error.message);
+        code = data.content[0].text;
+      }
+
+      // Cleanup markdown if LLM misbehaves
+      code = code.replace(/^```python\n?/, '').replace(/```$/, '').trim();
+
+      setShots(prev => prev.map(s => s.id === shot.id ? { ...s, isGenerating: false, generatedCode: code } : s));
+    } catch (err: any) {
+      setShots(prev => prev.map(s => s.id === shot.id ? { ...s, isGenerating: false, error: err.message || "Failed to generate script" } : s));
+    }
+  };
+
   return (
     <div className="app-container">
       <header className="header">
-        <div className="logo">
-          <Target className="icon text-primary" size={24} />
-          <h1>WebSniper</h1>
+        <div className="header-top">
+          <div className="logo">
+            <Target className="icon text-primary" size={24} />
+            <h1>WebSniper</h1>
+          </div>
+          <div className="tabs">
+            <button 
+              className={`tab-btn ${activeTab === 'home' ? 'active' : ''}`} 
+              onClick={() => setActiveTab('home')}
+            >
+              <Home size={18} />
+            </button>
+            <button 
+              className={`tab-btn ${activeTab === 'settings' ? 'active' : ''}`} 
+              onClick={() => setActiveTab('settings')}
+            >
+              <Settings size={18} />
+            </button>
+          </div>
         </div>
         <p className="subtitle">Aim, Click, Capture.</p>
       </header>
 
       <div className="main-content">
-        <div className="controls">
-          <span className="badge">
-            <span className="dot"></span>
-            Active
-          </span>
-          {shots.length > 0 && (
-            <button className="clear-btn" onClick={clearShots} title="Clear Shots">
-              <Trash2 size={16} />
-            </button>
-          )}
-        </div>
+        {activeTab === 'settings' && (
+          <div className="settings-panel fade-in">
+            <h2 className="panel-title">LLM Configuration</h2>
+            
+            <div className="form-group">
+              <label>Provider</label>
+              <select 
+                value={provider} 
+                onChange={(e) => {
+                  setProvider(e.target.value as Provider);
+                  setTimeout(saveSettings, 100);
+                }}
+                className="select-input"
+              >
+                <option value="openai">OpenAI</option>
+                <option value="anthropic">Anthropic</option>
+              </select>
+            </div>
 
-        {shots.length === 0 ? (
-          <div className="empty-state">
-            <Code2 size={48} className="empty-icon" />
-            <p>Hover over elements on the page and click to capture their data.</p>
+            <div className="form-group">
+              <label>API Key</label>
+              <input 
+                type="password" 
+                value={apiKey} 
+                onChange={(e) => setApiKey(e.target.value)}
+                onBlur={saveSettings}
+                placeholder={`Enter ${provider === 'openai' ? 'OpenAI' : 'Anthropic'} API Key`}
+                className="text-input"
+              />
+              <p className="help-text">Saved securely to local storage.</p>
+            </div>
+            
+            <button className="btn-primary" onClick={saveSettings}>
+              Save Settings
+            </button>
           </div>
-        ) : (
-          <div className="shots-list">
-            {shots.map((shot, idx) => (
-              <div key={idx} className="shot-card fade-in">
-                <div className="shot-header">
-                  <span className="shot-title">Shot #{shots.length - idx}</span>
-                  <button 
-                    className="copy-btn" 
-                    onClick={() => copyToClipboard(shot, idx)}
-                    title="Copy JSON"
-                  >
-                    {copiedIndex === idx ? (
-                      <CheckCircle size={16} className="text-success" />
-                    ) : (
-                      <Copy size={16} />
-                    )}
-                  </button>
-                </div>
-                <pre className="json-display">
-                  <code>
-                    <span className="json-key">"selector"</span>: <span className="json-string">"{shot.selector}"</span>,<br/>
-                    <span className="json-key">"xpath"</span>: <span className="json-string">"{shot.xpath}"</span>,<br/>
-                    <span className="json-key">"innerText"</span>: <span className="json-string">"{shot.innerText.slice(0, 50)}{shot.innerText.length > 50 ? '...' : ''}"</span>
-                  </code>
-                </pre>
+        )}
+
+        {activeTab === 'home' && (
+          <>
+            <div className="controls">
+              <span className="badge">
+                <span className="dot"></span> Active
+              </span>
+              {shots.length > 0 && (
+                <button className="clear-btn" onClick={clearShots} title="Clear Shots">
+                  <Trash2 size={16} />
+                </button>
+              )}
+            </div>
+
+            {shots.length === 0 ? (
+              <div className="empty-state">
+                <Code2 size={48} className="empty-icon" />
+                <p>Hover over elements on the page and click to capture their data.</p>
               </div>
-            ))}
-          </div>
+            ) : (
+              <div className="shots-list">
+                {shots.map((shot, idx) => (
+                  <div key={shot.id} className="shot-card fade-in">
+                    <div className="shot-header">
+                      <span className="shot-title">Shot #{shots.length - idx}</span>
+                      <button 
+                        className="copy-btn" 
+                        onClick={() => copyToClipboard(JSON.stringify({
+                          selector: shot.selector,
+                          xpath: shot.xpath,
+                          innerText: shot.innerText
+                        }, null, 2), idx, 'json')}
+                        title="Copy JSON"
+                      >
+                        {copiedIndex === idx ? <CheckCircle size={16} className="text-success" /> : <Copy size={16} />}
+                      </button>
+                    </div>
+                    
+                    <div className="shot-body">
+                      <pre className="json-display">
+                        <code>
+                          <span className="json-key">"selector"</span>: <span className="json-string">"{shot.selector}"</span>,<br/>
+                          <span className="json-key">"xpath"</span>: <span className="json-string">"{shot.xpath}"</span>,<br/>
+                          <span className="json-key">"innerText"</span>: <span className="json-string">"{shot.innerText.slice(0, 50)}{shot.innerText.length > 50 ? '...' : ''}"</span>
+                        </code>
+                      </pre>
+                      
+                      <div className="ai-section">
+                        <div className="command-input-group">
+                          <input 
+                            type="text" 
+                            className="text-input command-input" 
+                            placeholder="Command (e.g., Extract all items like this)"
+                            value={shot.command}
+                            onChange={(e) => updateShotCommand(shot.id, e.target.value)}
+                          />
+                          <button 
+                            className="btn-primary icon-btn" 
+                            onClick={() => generateAPI(shot)}
+                            disabled={shot.isGenerating}
+                            title="Generate API"
+                          >
+                            {shot.isGenerating ? <Loader2 size={16} className="spin" /> : <Play size={16} />}
+                          </button>
+                        </div>
+                        
+                        {shot.error && (
+                          <div className="error-message">{shot.error}</div>
+                        )}
+                        
+                        {shot.generatedCode && (
+                          <div className="code-result fade-in">
+                            <div className="code-header">
+                              <span>Playwright Python</span>
+                              <button 
+                                className="copy-btn" 
+                                onClick={() => copyToClipboard(shot.generatedCode!, shot.id, 'code')}
+                                title="Copy Code"
+                              >
+                                {copiedCodeIndex === shot.id ? <CheckCircle size={14} className="text-success" /> : <Copy size={14} />}
+                              </button>
+                            </div>
+                            <pre className="python-display">
+                              <code>{shot.generatedCode}</code>
+                            </pre>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>
