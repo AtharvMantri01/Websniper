@@ -11,7 +11,8 @@
     "storage"
   ],
   "host_permissions": [
-    "<all_urls>"
+    "<all_urls>",
+    "http://127.0.0.1:8000/*"
   ],
   "content_scripts": [
     {

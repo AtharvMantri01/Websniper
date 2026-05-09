@@ -132,6 +132,25 @@ function App() {
     };
   }, []);
 
+  const [engineStatus, setEngineStatus] = useState<'connected' | 'disconnected' | 'checking'>('checking');
+
+  const checkEngine = async () => {
+    try {
+      const res = await fetch('http://127.0.0.1:8000/');
+      // Even if it returns 404, it means the server is UP and responding
+      if (res.ok || res.status === 404) setEngineStatus('connected');
+      else setEngineStatus('disconnected');
+    } catch (e) {
+      setEngineStatus('disconnected');
+    }
+  };
+
+  useEffect(() => {
+    checkEngine();
+    const interval = setInterval(checkEngine, 10000);
+    return () => clearInterval(interval);
+  }, []);
+
   useEffect(() => {
     if (apiKey) {
       fetchModels(provider, apiKey);
@@ -215,13 +234,20 @@ function App() {
     setShots(prev => prev.map(s => s.id === shot.id ? { ...s, isGenerating: true, error: undefined, generatedCode: undefined } : s));
 
     const systemPrompt = `You are an expert Python Playwright engineer. Return ONLY a valid Python code snippet using the synchronous Playwright API (sync_playwright). Do not include any markdown formatting like \`\`\`python wrappers or explanations. Just the raw code.
-Assume the browser and page are already initialized. Just write the code to interact with the element as requested.
+Assume the browser and page are already initialized in a variable named 'page'. 
+
+CRITICAL GUIDELINES:
+1. On many sites, labels (e.g., "Capital:") and values are in separate adjacent tags. To be safe, locate the closest common container (like a card or div) and use its .text_content() for parsing.
+2. If using .text_content() on a container, use Python string manipulation (.split(), regex, etc.) to extract the value following a label.
+3. Use page.get_by_text("Label", exact=False) to find the starting point.
+4. Always print the final extracted data to the console in a clear format.
 
 Context:
+URL: ${window.location.href}
 Selector: ${shot.selector}
 XPath: ${shot.xpath}
-Inner Text: ${shot.innerText.substring(0, 200)}
-`;
+Inner Text: ${shot.innerText.substring(0, 1000)}
+Command: ${shot.command}`;
 
     try {
       let code = '';
@@ -290,7 +316,7 @@ Inner Text: ${shot.innerText.substring(0, 200)}
       const res = await fetch('http://127.0.0.1:8000/execute', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: task.code })
+        body: JSON.stringify({ code: task.code, url: task.url })
       });
       const result = await res.json();
       setSavedTasks(prev => prev.map(t => t.id === task.id ? { ...t, executionResult: { isRunning: false, success: result.success, output: result.output, error: result.error } } : t));
@@ -302,17 +328,22 @@ Inner Text: ${shot.innerText.substring(0, 200)}
   const runLive = async (shot: SniperShot) => {
     if (!shot.generatedCode) return;
     setShots(prev => prev.map(s => s.id === shot.id ? { ...s, executionResult: { isRunning: true } } : s));
-    try {
-      const res = await fetch('http://127.0.0.1:8000/execute', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: shot.generatedCode })
-      });
-      const result = await res.json();
-      setShots(prev => prev.map(s => s.id === shot.id ? { ...s, executionResult: { isRunning: false, success: result.success, output: result.output, error: result.error } } : s));
-    } catch (err) {
-      setShots(prev => prev.map(s => s.id === shot.id ? { ...s, executionResult: { isRunning: false, success: false, error: "Failed to connect to engine. Is it running on port 8000?" } } : s));
-    }
+    chrome.tabs?.query({ active: true, currentWindow: true }, async (tabs) => {
+      const activeTab = tabs[0];
+      const url = activeTab?.url || '';
+      
+      try {
+        const res = await fetch('http://127.0.0.1:8000/execute', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: shot.generatedCode, url: url })
+        });
+        const result = await res.json();
+        setShots(prev => prev.map(s => s.id === shot.id ? { ...s, executionResult: { isRunning: false, success: result.success, output: result.output, error: result.error } } : s));
+      } catch (err) {
+        setShots(prev => prev.map(s => s.id === shot.id ? { ...s, executionResult: { isRunning: false, success: false, error: "Failed to connect to engine. Is it running on port 8000?" } } : s));
+      }
+    });
   };
 
   const saveTaskToArmory = (shot: SniperShot) => {
@@ -425,6 +456,10 @@ Inner Text: ${shot.innerText.substring(0, 200)}
                 <button className="mini-btn" onClick={activateSniper} title="Re-sync Targeting">
                   <Zap size={12} />
                 </button>
+                <div className={`engine-badge ${engineStatus}`}>
+                  <Terminal size={12} />
+                  <span>Engine: {engineStatus}</span>
+                </div>
               </div>
               {shots.length > 0 && <button className="clear-btn" onClick={clearShots}><Trash2 size={16} /></button>}
             </div>
