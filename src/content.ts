@@ -1,22 +1,21 @@
 const HIGHLIGHT_CLASS = 'websniper-highlight';
 let activeElement: HTMLElement | null = null;
-let isActive = true;
+let isActive = false; // Start inactive
 
 // Inject CSS
 const style = document.createElement('style');
 style.textContent = `
   .websniper-highlight {
-    outline: 2px solid red !important;
+    outline: 2px solid #ef4444 !important;
     outline-offset: -2px !important;
-    background-color: rgba(255, 0, 0, 0.1) !important;
-    cursor: crosshair !important;
+    background-color: rgba(239, 68, 68, 0.1) !important;
+    transition: outline 0.1s ease-in-out !important;
   }
   body.websniper-active, body.websniper-active * {
     cursor: crosshair !important;
   }
 `;
 document.head.appendChild(style);
-document.body.classList.add('websniper-active');
 
 function getCssSelector(el: Element): string {
   if (el.tagName.toLowerCase() == "html") return "html";
@@ -33,12 +32,9 @@ function getCssSelector(el: Element): string {
 
 function getXPath(element: Element | null): string {
   if (!element || element.nodeType !== 1) return '';
-  if (element.id !== '') {
-    return `//*[@id="${element.id}"]`;
-  }
-  if (element === document.body) {
-    return element.tagName.toLowerCase();
-  }
+  if (element.id !== '') return `//*[@id="${element.id}"]`;
+  if (element === document.body) return 'body';
+  
   let ix = 0;
   const siblings = element.parentNode?.childNodes;
   if (siblings) {
@@ -58,12 +54,9 @@ function getXPath(element: Element | null): string {
 function handleMouseMove(e: MouseEvent) {
   if (!isActive) return;
   const target = e.target as HTMLElement;
-  if (target === activeElement) return;
+  if (target === activeElement || !target || target === document.body) return;
 
-  if (activeElement) {
-    activeElement.classList.remove(HIGHLIGHT_CLASS);
-  }
-
+  if (activeElement) activeElement.classList.remove(HIGHLIGHT_CLASS);
   activeElement = target;
   activeElement.classList.add(HIGHLIGHT_CLASS);
 }
@@ -74,40 +67,31 @@ function handleClick(e: MouseEvent) {
   e.stopPropagation();
 
   const target = e.target as HTMLElement;
-  if (activeElement) {
-    activeElement.classList.remove(HIGHLIGHT_CLASS);
-  }
-
   const selector = getCssSelector(target);
   const xpath = getXPath(target);
   const innerText = target.innerText || '';
 
-  // Re-add class for continuous usage or remove if you want single shot.
-  // We'll keep it active for continuous sniping!
-  activeElement = target;
-  activeElement.classList.add(HIGHLIGHT_CLASS);
-
   chrome.runtime.sendMessage({
     type: 'SNIPER_SHOT',
-    data: {
-      selector,
-      xpath,
-      innerText: innerText.trim()
-    }
+    data: { selector, xpath, innerText: innerText.trim().substring(0, 500) }
   });
 }
 
 document.addEventListener('mousemove', handleMouseMove, true);
 document.addEventListener('click', handleClick, true);
 
-chrome.runtime.onMessage.addListener((request) => {
-  if (request.type === 'DEACTIVATE_SNIPER') {
+chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
+  if (request.type === 'ACTIVATE_SNIPER') {
+    isActive = true;
+    document.body.classList.add('websniper-active');
+    sendResponse({ status: 'activated' });
+  } else if (request.type === 'DEACTIVATE_SNIPER') {
     isActive = false;
     document.body.classList.remove('websniper-active');
-    if (activeElement) {
-      activeElement.classList.remove(HIGHLIGHT_CLASS);
-    }
-    document.removeEventListener('mousemove', handleMouseMove, true);
-    document.removeEventListener('click', handleClick, true);
+    if (activeElement) activeElement.classList.remove(HIGHLIGHT_CLASS);
+    sendResponse({ status: 'deactivated' });
+  } else if (request.type === 'PING') {
+    sendResponse({ status: 'pong' });
   }
+  return true;
 });

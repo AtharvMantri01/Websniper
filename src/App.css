@@ -569,7 +569,27 @@ body {
   color: var(--primary);
 }
 
-.select-input {
-  appearance: none;
-  padding-right: 2.5rem !important;
+.status-group {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.mini-btn {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  border-radius: 0.25rem;
+  padding: 0.2rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.mini-btn:hover {
+  background: var(--primary);
+  color: white;
+  border-color: var(--primary);
 }

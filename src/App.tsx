@@ -70,6 +70,22 @@ function App() {
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
   const [isModelsLoading, setIsModelsLoading] = useState(false);
 
+
+  const activateSniper = () => {
+    chrome.tabs?.query({ active: true, currentWindow: true }, (tabs) => {
+      const activeTab = tabs[0];
+      if (activeTab?.id) {
+        chrome.tabs.sendMessage(activeTab.id, { type: 'ACTIVATE_SNIPER' }, (response) => {
+          if (chrome.runtime.lastError) {
+            console.log('Content script not ready, refreshing tab might be needed.');
+          } else {
+            console.log('Sniper activated:', response);
+          }
+        });
+      }
+    });
+  };
+
   useEffect(() => {
     // Load settings and tasks from storage
     if (chrome.storage && chrome.storage.local) {
@@ -82,16 +98,8 @@ function App() {
       });
     }
 
-    // Inject content script into active tab
-    chrome.tabs?.query({ active: true, currentWindow: true }, (tabs) => {
-      const activeTab = tabs[0];
-      if (activeTab?.id) {
-        chrome.scripting?.executeScript({
-          target: { tabId: activeTab.id },
-          files: ['content.js']
-        }).catch(err => console.log('Script injection error:', err));
-      }
-    });
+    // Try to activate sniper on load
+    setTimeout(activateSniper, 500);
 
     const messageListener = (request: any) => {
       if (request.type === 'SNIPER_SHOT') {
@@ -397,7 +405,12 @@ Inner Text: ${shot.innerText.substring(0, 200)}
         {activeTab === 'home' && (
           <>
             <div className="controls">
-              <span className="badge"><span className="dot"></span> Active</span>
+              <div className="status-group">
+                <span className="badge"><span className="dot"></span> Active</span>
+                <button className="mini-btn" onClick={activateSniper} title="Re-sync Targeting">
+                  <Zap size={12} />
+                </button>
+              </div>
               {shots.length > 0 && <button className="clear-btn" onClick={clearShots}><Trash2 size={16} /></button>}
             </div>
             {shots.length === 0 ? <div className="empty-state"><Code2 size={48} className="empty-icon" /><p>Capture elements to begin.</p></div> : (
