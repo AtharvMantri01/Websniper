@@ -56,6 +56,7 @@ function App() {
   // Action Sequence state
   const [actionSequence, setActionSequence] = useState<ActionStep[]>([]);
   const [workflowCommand, setWorkflowCommand] = useState<string>('');
+  const [jsonSchema, setJsonSchema] = useState<string>('');
   const [workflowCode, setWorkflowCode] = useState<string | undefined>();
   const [workflowGenerating, setWorkflowGenerating] = useState(false);
   const [workflowError, setWorkflowError] = useState<string | undefined>();
@@ -251,6 +252,11 @@ ENVIRONMENT:
 You will receive an ACTION SEQUENCE — an ordered list of steps the user recorded on a web page.
 Generate a single Python script that executes ALL steps in sequential order.
 
+MANDATORY PREAMBLE — MUST be the FIRST lines of every script, BEFORE the try block:
+import sys
+import io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+
 ACTION TYPES:
 - "click": Click the element. Use page.locator(selector).click(timeout=10000)
 - "type": Type text into the element (see TYPING RULE below for correct method).
@@ -263,7 +269,7 @@ MANDATORY RULES — VIOLATION MEANS BROKEN CODE:
 3. After any click that may trigger navigation or page changes, add: page.wait_for_load_state("domcontentloaded")
 4. Always add timeout=10000 to .click(), .fill(), .text_content() calls.
 5. Always print extracted data to stdout.
-6. Wrap the entire script in a try/except with meaningful error messages that identify which step failed.
+6. Wrap the entire script in a try/except. In the except block, print the error to stderr using print(f"Error: {e}", file=sys.stderr) and then call sys.exit(1) to signal failure to the runner.
 7. Use the CSS selector as primary. If the CSS selector looks too generic, use xpath= prefix with the XPath instead.
 8. ONLY use these Playwright locator methods: page.locator(css_or_xpath_selector).
 9. NEVER guess HTML tag names. NEVER use locators like "p:has-text(...)" or "div:has-text(...)".
@@ -277,7 +283,17 @@ MANDATORY RULES — VIOLATION MEANS BROKEN CODE:
 ACTION SEQUENCE:
 ${stepsDescription}
 
-${workflowCommand ? `USER INSTRUCTION: ${workflowCommand}` : ''}`;
+${workflowCommand ? `USER INSTRUCTION: ${workflowCommand}` : ''}
+
+${jsonSchema.trim() ? `OUTPUT SCHEMA — MANDATORY:
+A JSON Schema has been provided. Your FINAL output step MUST collect all extracted/gathered data and print a single, strictly formatted JSON string matching this schema.
+- Import json at the top of the script.
+- Use json.dumps(data, ensure_ascii=False, indent=2) to format the output.
+- The JSON string MUST be the LAST thing printed to stdout.
+- Do NOT print any other text after the JSON output.
+
+SCHEMA:
+${jsonSchema.trim()}` : ''}`;
 
     try {
       let code = '';
@@ -460,11 +476,22 @@ Do NOT change the overall logic or goal. Only fix what caused the error.`;
 
   const saveWorkflowToArmory = () => {
     if (!workflowCode || !workflowTaskName.trim()) return alert("Task name required.");
-    chrome.tabs?.query({ active: true, currentWindow: true }, (tabs) => {
-      const newTask: SavedTask = { id: Math.random().toString(36).substr(2, 9), name: workflowTaskName.trim(), url: tabs[0]?.url || 'Unknown', code: workflowCode };
+    chrome.tabs?.query({ active: true, currentWindow: true }, async (tabs) => {
+      const taskName = workflowTaskName.trim();
+      const taskUrl = tabs[0]?.url || 'Unknown';
+      const newTask: SavedTask = { id: Math.random().toString(36).substr(2, 9), name: taskName, url: taskUrl, code: workflowCode };
       const updated = [newTask, ...savedTasks];
       setSavedTasks(updated);
       chrome.storage.local.set({ savedTasks: updated }, () => setWorkflowTaskName(''));
+
+      // Also persist as a physical .py file on the runner
+      try {
+        await fetch('http://127.0.0.1:8000/tasks/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: taskName, code: workflowCode, url: taskUrl })
+        });
+      } catch { /* Runner might be offline, task is still saved in extension storage */ }
     });
   };
 
@@ -627,6 +654,10 @@ Do NOT change the overall logic or goal. Only fix what caused the error.`;
                       {workflowGenerating ? <Loader2 size={16} className="spin" /> : <Zap size={16} />}
                       Generate
                     </button>
+                  </div>
+                  <div>
+                    <span className="schema-label">Desired JSON Schema (Optional)</span>
+                    <textarea className="schema-textarea" placeholder='{&#10;  "product_name": "string",&#10;  "price": "number",&#10;  "in_stock": "boolean"&#10;}' value={jsonSchema} onChange={(e) => setJsonSchema(e.target.value)} />
                   </div>
 
                   {workflowError && <div className="error-message">{workflowError}</div>}
