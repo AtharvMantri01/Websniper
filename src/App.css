@@ -401,6 +401,7 @@ body {
   background: var(--code-bg);
   color: var(--code-text);
   margin: 0;
+  text-align: left;
 }
 
 /* Run Live & Terminal */

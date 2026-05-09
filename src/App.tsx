@@ -287,7 +287,7 @@ Inner Text: ${shot.innerText.substring(0, 200)}
     if (!task.code) return;
     setSavedTasks(prev => prev.map(t => t.id === task.id ? { ...t, executionResult: { isRunning: true } } : t));
     try {
-      const res = await fetch('http://localhost:8000/execute', {
+      const res = await fetch('http://127.0.0.1:8000/execute', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code: task.code })
@@ -303,7 +303,7 @@ Inner Text: ${shot.innerText.substring(0, 200)}
     if (!shot.generatedCode) return;
     setShots(prev => prev.map(s => s.id === shot.id ? { ...s, executionResult: { isRunning: true } } : s));
     try {
-      const res = await fetch('http://localhost:8000/execute', {
+      const res = await fetch('http://127.0.0.1:8000/execute', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code: shot.generatedCode })
