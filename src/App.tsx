@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Target, Copy, CheckCircle, Code2, Trash2, Settings, Home, Loader2, Play } from 'lucide-react';
+import { Target, Copy, CheckCircle, Code2, Trash2, Settings, Home, Loader2, Play, Terminal, Zap } from 'lucide-react';
 import './App.css';
 
 interface SniperShot {
@@ -11,6 +11,12 @@ interface SniperShot {
   generatedCode?: string;
   isGenerating?: boolean;
   error?: string;
+  executionResult?: {
+    isRunning?: boolean;
+    success?: boolean;
+    output?: string;
+    error?: string;
+  };
 }
 
 type Provider = 'openai' | 'anthropic';
@@ -163,6 +169,43 @@ Inner Text: ${shot.innerText.substring(0, 200)}
     }
   };
 
+  const runLive = async (shot: SniperShot) => {
+    if (!shot.generatedCode) return;
+    
+    setShots(prev => prev.map(s => s.id === shot.id ? { 
+      ...s, 
+      executionResult: { isRunning: true } 
+    } : s));
+
+    try {
+      const response = await fetch('http://localhost:8000/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: shot.generatedCode })
+      });
+      
+      const result = await response.json();
+      setShots(prev => prev.map(s => s.id === shot.id ? { 
+        ...s, 
+        executionResult: { 
+          isRunning: false,
+          success: result.success,
+          output: result.output,
+          error: result.error
+        } 
+      } : s));
+    } catch (err: any) {
+      setShots(prev => prev.map(s => s.id === shot.id ? { 
+        ...s, 
+        executionResult: { 
+          isRunning: false,
+          success: false,
+          error: "Failed to connect to execution engine. Is it running on port 8000?"
+        } 
+      } : s));
+    }
+  };
+
   return (
     <div className="app-container">
       <header className="header">
@@ -301,16 +344,42 @@ Inner Text: ${shot.innerText.substring(0, 200)}
                           <div className="code-result fade-in">
                             <div className="code-header">
                               <span>Playwright Python</span>
-                              <button 
-                                className="copy-btn" 
-                                onClick={() => copyToClipboard(shot.generatedCode!, shot.id, 'code')}
-                                title="Copy Code"
-                              >
-                                {copiedCodeIndex === shot.id ? <CheckCircle size={14} className="text-success" /> : <Copy size={14} />}
-                              </button>
+                              <div className="code-actions">
+                                <button 
+                                  className="run-btn"
+                                  onClick={() => runLive(shot)}
+                                  disabled={shot.executionResult?.isRunning}
+                                  title="Run Live"
+                                >
+                                  {shot.executionResult?.isRunning ? <Loader2 size={14} className="spin" /> : <Zap size={14} />}
+                                  Run Live
+                                </button>
+                                <button 
+                                  className="copy-btn" 
+                                  onClick={() => copyToClipboard(shot.generatedCode!, shot.id, 'code')}
+                                  title="Copy Code"
+                                >
+                                  {copiedCodeIndex === shot.id ? <CheckCircle size={14} className="text-success" /> : <Copy size={14} />}
+                                </button>
+                              </div>
                             </div>
                             <pre className="python-display">
                               <code>{shot.generatedCode}</code>
+                            </pre>
+                          </div>
+                        )}
+                        
+                        {shot.executionResult && !shot.executionResult.isRunning && (
+                          <div className={`terminal-output fade-in ${shot.executionResult.success ? 'success' : 'error'}`}>
+                            <div className="terminal-header">
+                              <Terminal size={14} />
+                              <span>Execution Output</span>
+                              <span className={`status-badge ${shot.executionResult.success ? 'status-success' : 'status-error'}`}>
+                                {shot.executionResult.success ? 'Success' : 'Failed'}
+                              </span>
+                            </div>
+                            <pre className="terminal-body">
+                              <code>{shot.executionResult.success ? shot.executionResult.output : shot.executionResult.error}</code>
                             </pre>
                           </div>
                         )}
