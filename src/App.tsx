@@ -62,6 +62,9 @@ function App() {
   const [workflowTaskName, setWorkflowTaskName] = useState('');
   const [workflowResult, setWorkflowResult] = useState<{ isRunning?: boolean; success?: boolean; output?: string; error?: string } | undefined>();
 
+  // Ghost Mode state
+  const [isGhostMode, setIsGhostMode] = useState(false);
+
   // Settings State
   const [provider, setProvider] = useState<Provider>('openai');
   const [apiKey, setApiKey] = useState<string>('');
@@ -111,6 +114,8 @@ function App() {
           timestamp: Date.now(),
         };
         setActionSequence(prev => [...prev, step]);
+      } else if (request.type === 'SNIPER_GHOST_MODE') {
+        setIsGhostMode(request.data.ghost);
       } else if (request.type === 'CONTENT_SCRIPT_READY') {
         activateSniper();
       }
@@ -244,7 +249,7 @@ Generate a single Python script that executes ALL steps in sequential order.
 
 ACTION TYPES:
 - "click": Click the element. Use page.locator(selector).click(timeout=10000)
-- "type": Click the element then type text into it. Use page.locator(selector).fill(value, timeout=10000)
+- "type": Type text into the element (see TYPING RULE below for correct method).
 - "extract": Extract text content from the element. Use page.locator(selector).text_content(timeout=10000) and print() the result.
 
 MANDATORY RULES — VIOLATION MEANS BROKEN CODE:
@@ -257,6 +262,11 @@ MANDATORY RULES — VIOLATION MEANS BROKEN CODE:
 7. Use the CSS selector as primary. If the CSS selector looks too generic, use xpath= prefix with the XPath instead.
 8. ONLY use these Playwright locator methods: page.locator(css_or_xpath_selector).
 9. NEVER guess HTML tag names. NEVER use locators like "p:has-text(...)" or "div:has-text(...)".
+10. CRITICAL TYPING RULE: If an action is [TYPE], check the selector tag. If the selector starts with "div", "span", "p", "td", "li", or any non-input element, DO NOT use .fill(). Instead use this exact pattern:
+    page.locator(selector).click(timeout=10000)
+    page.wait_for_timeout(500)
+    page.keyboard.type('the text')
+    Only use .fill(value, timeout=10000) when the selector is clearly an input, textarea, or [contenteditable] element.
 
 ACTION SEQUENCE:
 ${stepsDescription}
@@ -472,6 +482,10 @@ ${workflowCommand ? `USER INSTRUCTION: ${workflowCommand}` : ''}`;
                   <span>Engine: {engineStatus}</span>
                 </div>
               </div>
+            </div>
+
+            <div className={`sniper-banner ${isGhostMode ? 'paused' : 'active'}`}>
+              {isGhostMode ? '👻 Sniper: PAUSED (Alt+S to Resume)' : '🎯 Sniper: ON (Alt+S to Pause)'}
             </div>
 
             {actionSequence.length === 0 ? (

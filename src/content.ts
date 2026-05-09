@@ -2,6 +2,7 @@ const HIGHLIGHT_CLASS = 'websniper-highlight';
 const ACTION_MENU_ID = 'websniper-action-menu';
 let activeElement: HTMLElement | null = null;
 let isActive = false;
+let isGhostMode = false;
 let pendingTarget: {
   element: HTMLElement;
   selector: string;
@@ -161,9 +162,13 @@ function getXPath(element: Element | null): string {
   return '';
 }
 
-function removeActionMenu() {
+function dismissMenuDOM() {
   const existing = document.getElementById(ACTION_MENU_ID);
   if (existing) existing.remove();
+}
+
+function removeActionMenu() {
+  dismissMenuDOM();
   pendingTarget = null;
 }
 
@@ -197,14 +202,14 @@ function selectAction(action: 'click' | 'type' | 'extract') {
 }
 
 function showActionMenu(x: number, y: number) {
-  removeActionMenu();
+  dismissMenuDOM(); // only remove old menu DOM, preserve pendingTarget set by handleClick
 
   const menu = document.createElement('div');
   menu.id = ACTION_MENU_ID;
 
-  // Prevent the menu itself from triggering sniper events
-  menu.addEventListener('mousemove', (e) => e.stopPropagation(), true);
-  menu.addEventListener('click', (e) => e.stopPropagation(), true);
+  // Prevent the menu itself from triggering sniper events (bubble phase so child buttons fire first)
+  menu.addEventListener('mousemove', (e) => e.stopPropagation());
+  menu.addEventListener('click', (e) => e.stopPropagation());
 
   // Title
   const title = document.createElement('div');
@@ -245,7 +250,7 @@ function showActionMenu(x: number, y: number) {
 }
 
 function handleMouseMove(e: MouseEvent) {
-  if (!isActive) return;
+  if (!isActive || isGhostMode) return;
   // Don't highlight if hovering over the action menu
   const menu = document.getElementById(ACTION_MENU_ID);
   if (menu && (menu === e.target || menu.contains(e.target as Node))) return;
@@ -259,7 +264,7 @@ function handleMouseMove(e: MouseEvent) {
 }
 
 function handleClick(e: MouseEvent) {
-  if (!isActive) return;
+  if (!isActive || isGhostMode) return;
 
   // If clicking inside the action menu, let it handle itself
   const menu = document.getElementById(ACTION_MENU_ID);
@@ -281,6 +286,22 @@ function handleClick(e: MouseEvent) {
 function handleKeyDown(e: KeyboardEvent) {
   if (e.key === 'Escape') {
     removeActionMenu();
+  }
+  // Alt+S toggles Ghost Mode
+  if (e.altKey && (e.key === 's' || e.key === 'S')) {
+    e.preventDefault();
+    isGhostMode = !isGhostMode;
+    if (isGhostMode) {
+      // Entering Ghost Mode: remove all visual indicators
+      document.body.classList.remove('websniper-active');
+      if (activeElement) activeElement.classList.remove(HIGHLIGHT_CLASS);
+      activeElement = null;
+      removeActionMenu();
+    } else {
+      // Leaving Ghost Mode: restore targeting visuals
+      if (isActive) document.body.classList.add('websniper-active');
+    }
+    chrome.runtime.sendMessage({ type: 'SNIPER_GHOST_MODE', data: { ghost: isGhostMode } });
   }
 }
 
