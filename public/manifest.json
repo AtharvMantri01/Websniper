@@ -3,6 +3,12 @@
   "name": "WebSniper",
   "version": "1.0.0",
   "description": "Capture DOM element data effortlessly.",
+  "icons": {
+    "16": "icon.svg",
+    "32": "icon.svg",
+    "48": "icon.svg",
+    "128": "icon.svg"
+  },
   "permissions": [
     "activeTab",
     "scripting",
@@ -26,7 +32,8 @@
     "type": "module"
   },
   "action": {
-    "default_title": "WebSniper"
+    "default_title": "WebSniper",
+    "default_icon": "icon.svg"
   },
   "side_panel": {
     "default_path": "index.html"

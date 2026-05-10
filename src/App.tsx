@@ -95,9 +95,9 @@ function App() {
       if (activeTab?.id) {
         chrome.tabs.sendMessage(activeTab.id, { type: 'ACTIVATE_SNIPER' }, (response) => {
           if (chrome.runtime.lastError) {
-            console.log('Content script not ready, refreshing tab might be needed.');
+            // Handle error silently
           } else {
-            console.log('Sniper activated:', response);
+            // Success
           }
         });
       }
