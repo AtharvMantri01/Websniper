@@ -85,6 +85,7 @@ function App() {
   const [apiKey, setApiKey] = useState<string>('');
   const [model, setModel] = useState<string>('');
   const [customModel, setCustomModel] = useState<string>('');
+  const [proxyPool, setProxyPool] = useState<string>('');
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
   const [isModelsLoading, setIsModelsLoading] = useState(false);
 
@@ -105,11 +106,12 @@ function App() {
 
   useEffect(() => {
     if (chrome.storage && chrome.storage.local) {
-      chrome.storage.local.get(['provider', 'apiKey', 'model', 'customModel', 'savedTasks'], (result) => {
+      chrome.storage.local.get(['provider', 'apiKey', 'model', 'customModel', 'proxyPool', 'savedTasks'], (result) => {
         if (result.provider) setProvider(result.provider as Provider);
         if (result.apiKey) setApiKey(result.apiKey as string);
         if (result.model) setModel(result.model as string);
         if (result.customModel) setCustomModel(result.customModel as string);
+        if (result.proxyPool) setProxyPool(result.proxyPool as string);
         if (result.savedTasks) setSavedTasks(result.savedTasks as SavedTask[]);
       });
     }
@@ -224,7 +226,7 @@ function App() {
 
   const saveSettings = () => {
     if (chrome.storage && chrome.storage.local) {
-      chrome.storage.local.set({ provider, apiKey, model, customModel });
+      chrome.storage.local.set({ provider, apiKey, model, customModel, proxyPool });
     }
   };
 
@@ -245,6 +247,13 @@ function App() {
     setWorkflowError(undefined);
     setWorkflowCode(undefined);
 
+    const tabs = await new Promise<chrome.tabs.Tab[]>(resolve => chrome.tabs.query({ active: true, currentWindow: true }, resolve));
+    const activeTab = tabs[0];
+    const workflowUrl = activeTab?.url || '';
+
+    const hasProxies = proxyPool.trim().length > 0;
+    const proxyList = proxyPool.trim().split('\n').filter(p => p.trim());
+
     const stepsDescription = actionSequence.map((s, i) => {
       let desc = `Step ${i + 1}: [${s.action.toUpperCase()}] selector="${s.selector}" xpath="${s.xpath}" elementText="${s.innerText.slice(0, 100)}"`;
       if (s.action === 'type' && s.typeValue) desc += ` typeValue="${s.typeValue}"`;
@@ -255,9 +264,14 @@ function App() {
     const systemPrompt = `You are an expert Python Playwright automation engineer. Return ONLY raw Python code. No markdown, no \`\`\`python, no explanations.
 
 ENVIRONMENT:
-- A variable called 'page' is already available. It is a Playwright Page object that has already navigated to the target URL.
+${hasProxies ? 
+`- You are responsible for launching the browser because a Proxy Pool is configured.
+- Use 'from playwright.sync_api import sync_playwright' and 'with sync_playwright() as p:'.
+- A 'page' variable is NOT provided. You must create it.` 
+: 
+`- A variable called 'page' is already available. It is a Playwright Page object that has already navigated to the target URL.
 - Do NOT call sync_playwright(), do NOT launch a browser, do NOT call page.goto(). These are already done for you.
-- Just write the interaction/extraction code.
+- Just write the interaction/extraction code.`}
 
 You will receive an ACTION SEQUENCE — an ordered list of steps the user recorded on a web page.
 Generate a single Python script that executes ALL steps in sequential order.
@@ -266,6 +280,7 @@ MANDATORY PREAMBLE — MUST be the FIRST lines of every script, BEFORE the try b
 import sys
 import io
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+${hasProxies ? "import random" : ""}
 
 ACTION TYPES:
 - "click": Click the element. Use page.locator(selector).click(timeout=10000)
@@ -293,6 +308,29 @@ MANDATORY RULES — VIOLATION MEANS BROKEN CODE:
     search_query = "laptop"
     ...
     page.keyboard.type(search_query)
+
+${hasProxies ? `
+PROXY ROTATION RULE:
+You MUST pick a random proxy from this list:
+${JSON.stringify(proxyList)}
+
+1. Pick a random proxy string from the list.
+2. Parse the proxy string (Format: http://username:password@ip:port or http://ip:port).
+3. Launch the browser with the proxy:
+   proxy_parts = chosen_proxy.replace('http://', '').split('@')
+   if len(proxy_parts) == 2:
+       auth, server = proxy_parts
+       user, pw = auth.split(':')
+       browser = p.chromium.launch(headless=True, proxy={'server': 'http://' + server, 'username': user, 'password': pw})
+   else:
+       browser = p.chromium.launch(headless=True, proxy={'server': chosen_proxy})
+4. Create page: 
+   context = browser.new_context()
+   page = context.new_page()
+5. Navigate to target: page.goto("${workflowUrl}", wait_until="domcontentloaded")
+6. Wrap the action sequence in the try/except block.
+7. Close browser at the VERY end: browser.close()
+` : ''}
 
 ACTION SEQUENCE:
 ${stepsDescription}
@@ -624,6 +662,20 @@ Do NOT change the overall logic or goal. Only fix what caused the error.`;
               </div>
             )}
             <button className="btn-primary" onClick={saveSettings}>Save Settings</button>
+
+            <h2 className="panel-title" style={{marginTop: '1.5rem'}}>Proxy Settings</h2>
+            <div className="form-group">
+              <label>Proxy Pool (One per line)</label>
+              <textarea 
+                value={proxyPool} 
+                onChange={(e) => setProxyPool(e.target.value)} 
+                onBlur={saveSettings}
+                placeholder="http://user:pass@ip:port" 
+                className="text-input" 
+                style={{minHeight: '80px', fontFamily: 'monospace', fontSize: '11px', lineHeight: '1.4'}}
+              />
+              <p className="hint-text" style={{marginTop: '0.25rem', fontSize: '10px', color: 'var(--text-tertiary)'}}>Format: http://username:password@ip:port</p>
+            </div>
           </div>
         )}
 
@@ -644,7 +696,16 @@ Do NOT change the overall logic or goal. Only fix what caused the error.`;
                     <div className="shot-body">
                       <div className="task-url"><span className="json-key">URL:</span> <span className="json-string">{task.url}</span></div>
                       <div className="code-result">
-                        <div className="code-header"><span>Playwright Python</span><div className="code-actions">
+                        <div className="code-header">
+                          <div style={{ display: 'flex', alignItems: 'center' }}>
+                            <div className="mac-window-controls">
+                              <div className="mac-dot close"></div>
+                              <div className="mac-dot minimize"></div>
+                              <div className="mac-dot expand"></div>
+                            </div>
+                            <span>Playwright Python</span>
+                          </div>
+                          <div className="code-actions">
                           <button className="run-btn" onClick={() => runSavedTask(task)} disabled={task.executionResult?.isRunning}>
                             {task.executionResult?.isRunning ? <Loader2 size={14} className="spin" /> : <Zap size={14} />}
                             {task.executionResult?.healingAttempt ? `Healing (${task.executionResult.healingAttempt}/${task.executionResult.maxAttempts})...` : task.executionResult?.isRunning ? 'Running...' : 'Run Now'}
@@ -706,6 +767,12 @@ Do NOT change the overall logic or goal. Only fix what caused the error.`;
                   <Terminal size={12} />
                   <span>Engine: {engineStatus}</span>
                 </div>
+                {proxyPool.trim().length > 0 && (
+                  <div className="engine-badge success" style={{background: 'rgba(16, 185, 129, 0.1)', color: '#10b981', border: '1px solid rgba(16, 185, 129, 0.2)'}}>
+                    <Shield size={12} />
+                    <span>Proxies Active</span>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -769,7 +836,16 @@ Do NOT change the overall logic or goal. Only fix what caused the error.`;
 
                   {workflowCode && (
                     <div className="code-result fade-in">
-                      <div className="code-header"><span>Playwright Python ({actionSequence.length} steps)</span><div className="code-actions">
+                      <div className="code-header">
+                        <div style={{ display: 'flex', alignItems: 'center' }}>
+                          <div className="mac-window-controls">
+                            <div className="mac-dot close"></div>
+                            <div className="mac-dot minimize"></div>
+                            <div className="mac-dot expand"></div>
+                          </div>
+                          <span>Playwright Python ({actionSequence.length} steps)</span>
+                        </div>
+                        <div className="code-actions">
                         <label className="autofix-toggle"><input type="checkbox" checked={autoFixEnabled} onChange={(e) => setAutoFixEnabled(e.target.checked)} /><span className="toggle-slider" />Auto-Fix</label>
                         <button className="run-btn" onClick={runWorkflowLive} disabled={workflowResult?.isRunning || healingStatus?.active}>{healingStatus?.active ? <RefreshCw size={14} className="spin" /> : workflowResult?.isRunning ? <Loader2 size={14} className="spin" /> : <Zap size={14} />}Run Live</button>
                         <button className="copy-btn" onClick={() => copyToClipboard(workflowCode, 'workflow')}>{copiedCodeIndex === 'workflow' ? <CheckCircle size={14} /> : <Copy size={14} />}</button>
