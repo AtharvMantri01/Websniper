@@ -6,6 +6,8 @@ import { resolve } from 'path'
 export default defineConfig({
   plugins: [react()],
   build: {
+    minify: true,
+    sourcemap: false,
     rollupOptions: {
       input: {
         sidepanel: resolve(__dirname, 'index.html'),

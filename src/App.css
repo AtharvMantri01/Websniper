@@ -58,6 +58,13 @@ body {
   gap: 0.5rem;
 }
 
+.logo-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  object-fit: contain;
+}
+
 .logo h1 {
   font-size: 1.25rem;
   font-weight: 700;

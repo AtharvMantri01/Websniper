@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Target, Copy, CheckCircle, Code2, Trash2, Settings, Home, Loader2, Play, Terminal, Zap, Shield, Save, ChevronDown, X, MousePointerClick, Type, FileOutput, CornerDownLeft, RefreshCw, ExternalLink, Rocket } from 'lucide-react';
+import { Copy, CheckCircle, Code2, Trash2, Settings, Home, Loader2, Play, Terminal, Zap, Shield, Save, ChevronDown, X, MousePointerClick, Type, FileOutput, CornerDownLeft, RefreshCw, ExternalLink, Rocket } from 'lucide-react';
 import './App.css';
 
 interface ActionStep {
@@ -93,7 +93,7 @@ function App() {
     chrome.tabs?.query({ active: true, currentWindow: true }, (tabs) => {
       const activeTab = tabs[0];
       if (activeTab?.id) {
-        chrome.tabs.sendMessage(activeTab.id, { type: 'ACTIVATE_SNIPER' }, (response) => {
+        chrome.tabs.sendMessage(activeTab.id, { type: 'ACTIVATE_SNIPER' }, (_response) => {
           if (chrome.runtime.lastError) {
             // Handle error silently
           } else {
@@ -619,7 +619,7 @@ Do NOT change the overall logic or goal. Only fix what caused the error.`;
     <div className="app-container">
       <header className="header">
         <div className="header-top">
-          <div className="logo"><Target className="icon text-primary" size={24} /><h1>WebSniper</h1></div>
+          <div className="logo"><img src="/icon.svg" className="logo-icon" alt="WebSniper Logo" /><h1>WebSniper</h1></div>
           <div className="tabs">
             <button className={`tab-btn ${activeTab === 'home' ? 'active' : ''}`} onClick={() => setActiveTab('home')}><Home size={18} /></button>
             <button className={`tab-btn ${activeTab === 'armory' ? 'active' : ''}`} onClick={() => setActiveTab('armory')}><Shield size={18} /></button>
