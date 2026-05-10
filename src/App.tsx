@@ -679,6 +679,7 @@ Do NOT change the overall logic or goal. Only fix what caused the error.`;
                             </div>
                           )}
                           <div className="api-curl-block">
+                            <div className="api-tip"><Zap size={10} /> Tip: Pass <code>"urls": ["url1", "url2"]</code> instead of <code>url</code> for bulk execution!</div>
                             <pre>{`curl -X POST http://localhost:8000/api/v1/run/${sanitizeTaskName(task.name)} \\
   -H "Content-Type: application/json" \\
   -d '${JSON.stringify({ url: task.url, ...(task.inputs && task.inputs.length > 0 ? { inputs: Object.fromEntries(task.inputs.map(inp => [inp.name, inp.defaultValue])) } : {}) })}'`}</pre>
