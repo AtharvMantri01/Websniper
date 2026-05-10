@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="icon.svg" alt="WebSniper Logo" width="128" />
+  <img src="public/icon.svg" alt="WebSniper Logo" width="128" />
   <h1>WebSniper</h1>
   <p><b>Turn any website into a REST API with one click. Local-first. BYOK.</b></p>
 
